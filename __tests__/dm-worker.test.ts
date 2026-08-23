@@ -439,13 +439,16 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockSendPrivateReply).not.toHaveBeenCalled();
   });
 
-  it("should log FAILED, release usage, and re-throw when private reply sending fails", async () => {
+  // Must NOT rethrow: a BullMQ retry would deliver a second private reply to
+  // someone Meta may already have messaged (it returns a generic error for sends
+  // that landed), and Instagram allows only one private reply per comment.
+  it("should log FAILED and release usage without rethrowing when private reply sending fails", async () => {
     const error = new Error("API Error");
     mockSendPrivateReply.mockRejectedValue(error);
 
     const processor = getProcessor();
 
-    await expect(processor(createMockJob())).rejects.toThrow("API Error");
+    await expect(processor(createMockJob())).resolves.toBeUndefined();
     expect(mockReleaseWorkspaceDMReservation).toHaveBeenCalledWith(
       "workspace_123",
       usagePeriodStart
@@ -856,9 +859,7 @@ describe("DM Worker — one private reply per comment", () => {
     );
 
     const processor = getProcessor();
-    await expect(processor(createMockJob())).rejects.toThrow(
-      "The comment is invalid for a private reply"
-    );
+    await expect(processor(createMockJob())).resolves.toBeUndefined();
 
     // A text retry on the same comment would fail identically and overwrite the
     // real reason, so it must not be attempted.
