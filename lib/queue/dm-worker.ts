@@ -668,7 +668,14 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: formatError(error),
         },
       });
-      throw error;
+      // Deliberately NOT rethrown. Meta sometimes returns a generic "Error 1"
+      // for a private reply it actually delivered, and Instagram allows exactly
+      // one private reply per comment — so a BullMQ retry cannot repair a failed
+      // send, it can only deliver a second copy to someone who already got the
+      // first. Observed 2026-08-23: one recipient received five identical DMs
+      // while every attempt logged FAILED. The row stays FAILED for review;
+      // verify against the real inbox before ever resending by hand.
+      return;
     }
   }
 }
@@ -1242,7 +1249,12 @@ export function createDMWorker(): Worker<DmQueueJob> {
     processJob,
     {
       connection: getRedisConnection(),
-      concurrency: 5,
+      // Sends are paced, not burst. The hourly cap in rate-limiter.ts (750/hr)
+      // says nothing about rate: on 2026-08-23 a backlog fired ~80 DMs in 90
+      // seconds and Meta throttled the tail of it. A backlog should drain over
+      // minutes, not seconds.
+      concurrency: 2,
+      limiter: { max: 6, duration: 60_000 },
       settings: {
         backoffStrategy: (attemptsMade: number) =>
           BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],

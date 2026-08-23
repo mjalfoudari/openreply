@@ -36,9 +36,11 @@ import {
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 
-// Only consider comments from the last few days — older ones are outside
-// Instagram's private-reply window anyway, so a DM to them would just fail.
-const LOOKBACK_HOURS = Number(process.env.COMMENT_POLL_LOOKBACK_HOURS ?? 72);
+// Match Instagram's own private-reply window: 7 days from the comment. Older
+// than that and the send fails, so there is nothing to gain by looking further
+// back — but anything shorter silently abandons commenters we could still
+// legally answer. 72h used to be the default and stranded 4 usable days.
+const LOOKBACK_HOURS = Number(process.env.COMMENT_POLL_LOOKBACK_HOURS ?? 168);
 // Hard cap on how many new comments a single campaign can enqueue per sweep, so
 // a viral post drains gradually instead of bursting into the comment API.
 const MAX_NEW_PER_SWEEP = Number(process.env.COMMENT_POLL_MAX_PER_SWEEP ?? 30);
@@ -218,10 +220,39 @@ async function sweepCampaign(
     });
     const handledSet = new Set(handled.map((h) => h.commentId));
 
-    // Oldest first, so whoever commented earliest gets answered first, capped.
-    const fresh = needsAction
+    // One DM per person per campaign, not per comment. Dedup is keyed on
+    // (automationId, commentId), so someone who writes "مهتم" three times used to
+    // get three identical DMs — and a second keyword on the same campaign
+    // (مهتم + مهام) counted as another. Drop anyone this campaign has already
+    // reached, then keep only their earliest unanswered comment.
+    const candidates = needsAction
       .filter((c) => !handledSet.has(c.id))
-      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+
+    const alreadyMessaged = new Set(
+      (
+        await prisma.dmLog.findMany({
+          where: {
+            automationId: automation.id,
+            status: "SENT",
+            commenterId: { in: candidates.map((c) => c.from!.id) },
+          },
+          select: { commenterId: true },
+        })
+      ).map((l) => l.commenterId)
+    );
+
+    const seenThisSweep = new Set<string>();
+    const fresh = candidates
+      .filter((c) => {
+        const who = c.from!.id;
+        if (alreadyMessaged.has(who) || seenThisSweep.has(who)) {
+          stat.alreadyReplied += 1;
+          return false;
+        }
+        seenThisSweep.add(who);
+        return true;
+      })
       .slice(0, MAX_NEW_PER_SWEEP);
 
     for (const c of fresh) {
