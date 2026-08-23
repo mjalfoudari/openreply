@@ -105,6 +105,17 @@ The worker runs `concurrency: 2` behind a 6-per-minute limiter. The hourly cap i
 replies) says nothing about burst rate — firing ~80 sends in 90 seconds gets the
 tail throttled well under that cap. A backlog should drain over minutes.
 
+### Restarting the worker
+
+The worker reads its source at boot and has no watch mode, so **no code change
+reaches the sender until the process is restarted** — a fix can be committed and
+passing tests while the running sender still has the old behaviour.
+
+Restart only when the queue is idle (`waiting` and `active` both 0). BullMQ treats
+a job killed mid-flight as stalled and re-runs it, and re-running a private reply
+that already landed delivers a duplicate to a real person. For the same reason,
+avoid `tsx watch` here: it would bounce the worker mid-send on every save.
+
 ### A failed private reply is never retried
 
 Meta sometimes returns a generic `Error 1: An unknown error has occurred` for a
