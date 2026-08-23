@@ -46,7 +46,11 @@ OpenReply is built around Meta's official Instagram private replies. It does not
 4. On a keyword match, it queues a job.
 5. A background worker sends the private reply, and the public reply if you enabled one.
 
+Webhooks are best-effort and miss comments, so the worker also re-reads each campaign's post every few minutes and picks up anything that was missed, within Instagram's 7-day private-reply window.
+
 The web app receives the webhook and serves the dashboard. A separate worker process does the sending, because the send has to survive rate limits and retries. Both talk to the same Postgres and Redis.
+
+Sending is deliberately paced, one DM per person per campaign, and a failed send is never retried — Instagram allows only one private reply per comment, so a retry duplicates rather than repairs. See [docs/stack.md](docs/stack.md#sending-behaviour).
 
 ## Quick start
 
