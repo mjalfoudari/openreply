@@ -131,4 +131,20 @@ describe("matchKeywords — edge cases", () => {
     const result = matchKeywords("I want more info please", ["more info"], true);
     expect(result.matched).toBe(true);
   });
+  // Arabic keywords silently never matched: \w / \b are ASCII-only, so the
+  // cleaner reduced every Arabic comment to "" before the keyword was tested.
+  it("should match an Arabic keyword in an Arabic comment", () => {
+    const result = matchKeywords("مهتم", ["مهتم"], true);
+    expect(result.matched).toBe(true);
+  });
+
+  it("should match an Arabic keyword inside a longer Arabic comment", () => {
+    const result = matchKeywords("مهتم جدا 🔥", ["مهتم"], true);
+    expect(result.matched).toBe(true);
+  });
+
+  it("should not match a different Arabic word", () => {
+    const result = matchKeywords("شكرا لك", ["مهتم"], true);
+    expect(result.matched).toBe(false);
+  });
 });

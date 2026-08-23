@@ -24,7 +24,9 @@ export function stripSpecialCharacters(text: string): string {
       /[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{200D}\u{20E3}]/gu,
       ""
     )
-    .replace(/[^\w\s]/g, " ")
+    // Unicode-aware: \w is ASCII-only, so a plain [^\w\s] strips every Arabic
+    // letter and leaves an empty string — Arabic keywords could never match.
+    .replace(/[^\p{L}\p{N}_\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -64,7 +66,12 @@ export function matchKeywords(
         /[.*+?^${}()|[\]\\]/g,
         "\\$&"
       );
-      const regex = new RegExp(`\\b${escapedKeyword}\\b`, "i");
+      // \b is defined against ASCII \w, so it never fires next to Arabic.
+      // Lookarounds over \p{L}\p{N}_ give the same meaning in any script.
+      const regex = new RegExp(
+        `(?<![\\p{L}\\p{N}_])${escapedKeyword}(?![\\p{L}\\p{N}_])`,
+        "iu"
+      );
       if (regex.test(cleanedText)) {
         return { matched: true, matchedKeyword: keyword };
       }
