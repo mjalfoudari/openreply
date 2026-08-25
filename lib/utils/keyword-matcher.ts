@@ -68,8 +68,14 @@ export function matchKeywords(
       );
       // \b is defined against ASCII \w, so it never fires next to Arabic.
       // Lookarounds over \p{L}\p{N}_ give the same meaning in any script.
+      //
+      // The optional `ال` prefix matters: Arabic's definite article attaches to
+      // the word, so "البرومبت" is the same request as "برومبت" but fails a
+      // whole-word test. Real comments arrive both ways ("ممكن البرومبت؟"), and
+      // the keyword lists had started hand-listing "التوزيع" beside "توزيع" to
+      // work around it. Handled once here instead.
       const regex = new RegExp(
-        `(?<![\\p{L}\\p{N}_])${escapedKeyword}(?![\\p{L}\\p{N}_])`,
+        `(?<![\\p{L}\\p{N}_])(?:ال)?${escapedKeyword}(?![\\p{L}\\p{N}_])`,
         "iu"
       );
       if (regex.test(cleanedText)) {

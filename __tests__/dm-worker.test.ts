@@ -739,6 +739,45 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
   });
 
+  // Instagram's follow flag lags and misreports; a gate that never gives up
+  // trapped 13 real users in a loop. First tap re-prompts, second one delivers.
+  it("should re-prompt on the first follow-gate bounce, with different wording", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation, requireFollow: true, followPromptButtonLabel: "تم المتابعة", trackedLinks: [],
+    });
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.dmLog.findUnique.mockResolvedValue(null);          // no prior bounce
+
+    const processor = getProcessor();
+    await processor(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789",
+    }));
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalled();
+    const sentText = mockSendDirectMessageWithButton.mock.calls[0][3];
+    expect(sentText).toContain("المتابعة ما ظهرت عندي بعد");   // not a verbatim repeat
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();  // no link yet
+  });
+
+  it("should fail open and deliver the link on the second follow-gate bounce", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation, requireFollow: true, trackedLinks: [],
+    });
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.dmLog.findUnique.mockResolvedValue({ attempts: 1 }); // already bounced once
+
+    const processor = getProcessor();
+    await processor(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789",
+    }));
+
+    // No third prompt — the link goes out despite Instagram still saying false.
+    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).toHaveBeenCalled();
+  });
+
   it("should deliver a follow-gated read fallback once the user follows", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([]);
     mockPrisma.automation.findFirst.mockResolvedValue({

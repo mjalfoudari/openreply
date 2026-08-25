@@ -39,6 +39,13 @@ import {
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
 
+// How many "i'm following" taps before the gate gives up and sends the link
+// anyway. Instagram's follow flag lags and misreports, so a strict gate loses
+// real members; see the follow-gate block in processPostback.
+const FOLLOW_GATE_MAX_BOUNCES = 2;
+const FOLLOW_RETRY_NOTE =
+  "المتابعة ما ظهرت عندي بعد 🙏 تأكد إنك ضاغط Follow من حسابي، وبعدها اضغط الزر مرة ثانية وبيوصلك على طول";
+
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
 function formatError(error: unknown): string {
@@ -754,28 +761,72 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     const follows = await getUserFollowStatus(accessToken, userId);
     if (follows === false) {
       if (fallback) return;
-      const promptText = renderMessageWithoutLink({
-        message:
-          automation.followPromptMessage ||
-          "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
-        commenterName,
+
+      // Count the bounces. Instagram's follow flag lags and is sometimes simply
+      // wrong, so a strict gate traps real people: observed 2026-08-25, 13 users
+      // tapped "i'm following" and never got their link, 5 of them more than
+      // once, and none of it was visible because this branch used to return
+      // without writing anything.
+      const gateId = `followgate:${userId}`;
+      const prior = await prisma.dmLog.findUnique({
+        where: { automationId_commentId: { automationId: automation.id, commentId: gateId } },
+        select: { attempts: true },
       });
-      try {
-        await sendDirectMessageWithButton(
-          accessToken,
-          automation.instagramAccount.instagramId,
-          userId,
-          promptText,
-          automation.followPromptButtonLabel || "i'm following",
-          `followcheck:${automation.id}`
-        );
-      } catch (error) {
-        console.log(
-          "[DM Worker] Failed to re-send follow prompt:",
-          formatError(error)
-        );
+      const bounces = (prior?.attempts ?? 0) + 1;
+      const logBase = {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName,
+        commentText: "(follow gate)",
+        commentId: gateId,
+        status: "SKIPPED_NO_MATCH" as const,
+        attempts: bounces,
+        errorMessage: `Follow gate: Instagram reports not following (tap ${bounces})`,
+      };
+      await prisma.dmLog
+        .upsert({
+          where: { automationId_commentId: { automationId: automation.id, commentId: gateId } },
+          create: logBase,
+          update: { attempts: bounces, errorMessage: logBase.errorMessage },
+        })
+        .catch(() => {});
+
+      // Second tap fails OPEN. Someone who taps twice has done what was asked as
+      // far as they can tell; a freeloader costs nothing next to a real person
+      // stuck in a loop writing "لم استلم اي شي".
+      if (bounces >= FOLLOW_GATE_MAX_BOUNCES) {
+        console.log(`[DM Worker] Follow gate failing open for ${userId} after ${bounces} taps`);
+      } else {
+        // Never repeat the first message verbatim — an identical reply reads as a
+        // broken bot rather than "you are not following yet".
+        const promptText =
+          FOLLOW_RETRY_NOTE +
+          "\n\n" +
+          renderMessageWithoutLink({
+            message:
+              automation.followPromptMessage ||
+              "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
+            commenterName,
+          });
+        try {
+          await sendDirectMessageWithButton(
+            accessToken,
+            automation.instagramAccount.instagramId,
+            userId,
+            promptText,
+            automation.followPromptButtonLabel || "i'm following",
+            `followcheck:${automation.id}`
+          );
+        } catch (error) {
+          console.log(
+            "[DM Worker] Failed to re-send follow prompt:",
+            formatError(error)
+          );
+        }
+        return;
       }
-      return;
     }
   }
 

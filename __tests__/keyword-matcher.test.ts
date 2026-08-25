@@ -147,4 +147,14 @@ describe("matchKeywords — edge cases", () => {
     const result = matchKeywords("شكرا لك", ["مهتم"], true);
     expect(result.matched).toBe(false);
   });
+  // Arabic's definite article attaches to the word, so a whole-word test on the
+  // bare keyword misses it. Real comment seen: "ممكن البرومبت؟"
+  it("should match an Arabic keyword carrying the definite article", () => {
+    expect(matchKeywords("ممكن البرومبت؟", ["برومبت"], true).matched).toBe(true);
+    expect(matchKeywords("التوزيع", ["توزيع"], true).matched).toBe(true);
+  });
+
+  it("should not match when the prefix is part of a different word", () => {
+    expect(matchKeywords("العالم", ["الم"], true).matched).toBe(false);
+  });
 });
