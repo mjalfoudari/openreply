@@ -1068,7 +1068,16 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
   const dedupeId = `dm:${messageId}`;
 
+  // ONE reply per inbound message, not one per campaign.
+  //
+  // This loops every automation whose keywords match, and each match sends its own DM.
+  // With a common word in several campaigns' keyword lists that is a burst at one person:
+  // on 2026-08-26 someone typed "تمام اخي" and received FIFTEEN DMs, one per campaign,
+  // because تم/تمام had just been added to sixteen keyword lists. A person who writes one
+  // message expects one answer.
+  let answered = false;
   for (const automation of automations) {
+    if (answered) break;
     const matchResult = automation.matchAnyWord
       ? { matched: true, matchedKeyword: null }
       : matchKeywords(
@@ -1259,6 +1268,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: null,
         },
       });
+      answered = true; // this person has their reply; no other campaign should also answer
     } catch (error) {
       await releaseWorkspaceDMReservation(
         automation.workspaceId,

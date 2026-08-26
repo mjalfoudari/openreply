@@ -1010,6 +1010,28 @@ describe("DM Worker — DM keyword trigger", () => {
     };
   }
 
+  // Someone typed "تمام اخي" and received FIFTEEN DMs — one per campaign whose keyword
+  // list contained تمام. One inbound message deserves one answer.
+  it("answers an inbound DM once, even when several campaigns match it", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...dmTriggerAutomation, id: "auto_a", name: "A" },
+      { ...dmTriggerAutomation, id: "auto_b", name: "B" },
+      { ...dmTriggerAutomation, id: "auto_c", name: "C" },
+    ]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue(null);
+    mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "تمام" });
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    const sends =
+      mockSendDirectMessage.mock.calls.length +
+      mockSendDirectMessageWithButton.mock.calls.length +
+      mockSendDirectMessageWithLinkButton.mock.calls.length;
+    expect(sends).toBe(1);
+  });
+
+
   beforeEach(() => {
     mockPrisma.automation.findMany.mockResolvedValue([dmTriggerAutomation]);
   });
