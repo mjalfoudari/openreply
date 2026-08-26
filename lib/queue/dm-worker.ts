@@ -1368,7 +1368,17 @@ export function createDMWorker(): Worker<DmQueueJob> {
       // seconds and Meta throttled the tail of it. A backlog should drain over
       // minutes, not seconds.
       concurrency: 2,
-      // 3/min = 180/hour. Sized against measured demand, not Meta's documented 750/hour
+      // 5/min = 300/hour. Raised from 3 once the adaptive throttle was verified working:
+      // at 3/min the brake had us at ~1.0 sends/min against ~2.7 comments/min arriving, so
+      // the queue grew and the median commenter waited an hour. Latency was the complaint
+      // people actually voiced ("ماوصل شي" after waiting 170-239 minutes), not delivery.
+      //
+      // 5 is deliberately the EDGE of the danger band, not past it: both refusals followed
+      // sustained 4-7.9/min, so 6 sits inside a range that has failed twice out of two.
+      // The ceiling is safe to push only because the brake now steps down on its own —
+      // raising it without that is what caused the 26% refusal.
+      //
+      // Sized against demand, not Meta's documented 750/hour
       // (a ceiling this account demonstrably does not enjoy): peak comment arrival is
       // 2.7/min and the median is 0.55/min, so 3 clears the busiest hour with headroom.
       //
@@ -1379,7 +1389,7 @@ export function createDMWorker(): Worker<DmQueueJob> {
       // This is a CEILING, not a promise: the adaptive throttle steps the real pace down
       // whenever Meta starts refusing, which is the actual safety mechanism. Raising this
       // number without that brake working is what produced the 26% failure.
-      limiter: { max: 3, duration: 60_000 },
+      limiter: { max: 5, duration: 60_000 },
       settings: {
         backoffStrategy: (attemptsMade: number) =>
           BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],
