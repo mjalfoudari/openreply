@@ -44,9 +44,24 @@ async function acquireLock(): Promise<boolean> {
 
 async function refreshLock(): Promise<void> {
   const redis = getRedisConnection();
-  // Only extend our own lock, never steal someone else's.
   const owner = await redis.get(LOCK_KEY);
-  if (owner === OWNER) await redis.pexpire(LOCK_KEY, LOCK_TTL_MS);
+
+  if (owner === OWNER) {
+    await redis.pexpire(LOCK_KEY, LOCK_TTL_MS);
+    return;
+  }
+
+  // We no longer hold it. Checking the lock only at boot was not enough: on 2026-08-26 a
+  // worker whose lock had lapsed kept running while launchd started a second one that
+  // took it, and both sent for two hours — each with its own in-memory throttle seeing
+  // only half the failures, so neither brake could hold the line and Meta refused 96%.
+  //
+  // Losing the lock means someone else is the worker now. Exit rather than double the
+  // send rate; launchd will restart us and we will be refused cleanly at boot.
+  console.error(
+    `[DM Worker] Lost the singleton lock (now held by ${owner ?? "nobody"}). Exiting so two workers never send at once.`
+  );
+  process.exit(0);
 }
 
 async function releaseLock(): Promise<void> {
