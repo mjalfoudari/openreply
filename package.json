@@ -10,7 +10,7 @@
     "lint": "eslint",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "worker": "tsx worker/dm-worker.ts",
+    "worker": "tsx --env-file=.env worker/dm-worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

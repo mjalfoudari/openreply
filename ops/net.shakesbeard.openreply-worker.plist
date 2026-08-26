@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>net.shakesbeard.openreply-worker</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/mj/.local/bin/node</string>
+		<string>/Users/mj/Shakesbeard Labs/My Apps/openreply/node_modules/.bin/tsx</string>
+		<string>--env-file=.env</string>
+		<string>worker/dm-worker.ts</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/mj/Shakesbeard Labs/My Apps/openreply</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/mj/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/Users/mj/Shakesbeard Labs/My Apps/openreply/ops/worker.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/mj/Shakesbeard Labs/My Apps/openreply/ops/worker.err.log</string>
+</dict>
+</plist>
