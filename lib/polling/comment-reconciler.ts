@@ -26,7 +26,7 @@
  */
 
 import { prisma } from "@/lib/db/client";
-import { getDMQueue } from "@/lib/queue/client";
+import { PRIORITY_BACKLOG, getDMQueue } from "@/lib/queue/client";
 import {
   getRecentMediaComments,
   getUserMedia,
@@ -344,7 +344,13 @@ async function sweepCampaign(
         commenterName: c.from?.username,
         mediaId,
         source: "POLLING",
-      }, { jobId: `c_${automation.id}_${c.id}`, removeOnComplete: true });
+      }, {
+        jobId: `c_${automation.id}_${c.id}`,
+        removeOnComplete: true,
+        // Behind anything the webhook just delivered: these were already missed once,
+        // so nobody is staring at the post waiting for them.
+        priority: PRIORITY_BACKLOG,
+      });
       stat.enqueued += 1;
     }
   }

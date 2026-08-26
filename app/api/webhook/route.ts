@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getDMQueue } from "@/lib/queue/client";
+import { PRIORITY_LIVE, getDMQueue } from "@/lib/queue/client";
 import {
   parseCommentEvents,
   parseMessageEvents,
@@ -103,6 +103,8 @@ export async function POST(request: NextRequest) {
         },
         {
           jobId: `comment_${event.instagramAccountId}_${event.commentId}`,
+          // Someone is on the post right now — ahead of the recovery backlog.
+          priority: PRIORITY_LIVE,
         }
       );
 

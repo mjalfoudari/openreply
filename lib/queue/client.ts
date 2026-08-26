@@ -20,6 +20,21 @@ export function getRedisConnection(): Redis {
 
 // ─── DM Queue ───────────────────────────────────────────────────────────────────
 
+/**
+ * Job priority. BullMQ treats LOWER as more urgent.
+ *
+ * Measured 2026-08-26 on a live reel: median wait from comment to DM was 33 minutes,
+ * 27% waited over two hours, the worst 12 hours — and three people commented "ماوصل شي"
+ * after waiting 170, 218 and 239 minutes. The send rate is capped by what Meta tolerates,
+ * so the queue cannot simply run faster. What it can do is serve the person who just
+ * commented before the backlog from three hours ago.
+ *
+ * A webhook means someone is on the post RIGHT NOW. The sweep is a safety net for
+ * comments already missed once — by definition nobody is watching for those.
+ */
+export const PRIORITY_LIVE = 1;
+export const PRIORITY_BACKLOG = 10;
+
 export type CommentSource = "WEBHOOK" | "POLLING";
 
 export interface ProcessCommentJob {
