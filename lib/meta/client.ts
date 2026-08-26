@@ -444,7 +444,7 @@ export async function getRecentMediaComments(
   accessToken: string,
   mediaId: string,
   sinceMs: number,
-  max = 800
+  max = 5000
 ): Promise<InstagramComment[]> {
   const results: InstagramComment[] = [];
 

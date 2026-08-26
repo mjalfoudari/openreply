@@ -664,6 +664,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
       });
     } catch (error) {
+      // THE send failure. The throttle exists for exactly this catch — wiring it to the
+      // rate-limiter catch instead (as the first version of this did) leaves the outcome
+      // window pure `true`, so the brake never engages and its silence reads as health.
+      throttleRecord(false, formatError(error));
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
         usage.periodStart
@@ -678,7 +682,11 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
         data: {
           status: "FAILED",
-          attempts: job.attemptsMade + 1,
+          // increment, not `job.attemptsMade + 1`: failures are not rethrown, so BullMQ
+          // never retries and attemptsMade is always 0 for a sweep job. Every row sat at
+          // attempts=1 no matter how many times it was tried, which made "give up after
+          // N" unimplementable and hid the size of the 2026-08-26 incident.
+          attempts: { increment: 1 },
           errorMessage: formatError(error),
         },
       });
@@ -1312,11 +1320,13 @@ export function createDMWorker(): Worker<DmQueueJob> {
       // seconds and Meta throttled the tail of it. A backlog should drain over
       // minutes, not seconds.
       concurrency: 2,
-      // 10/min = 600/hour, comfortably under Meta's documented 750 private
-      // replies/hour and 5x below the ~53/min burst that got the account
-      // throttled on 2026-08-23. 6/min was the panic setting straight after that
-      // incident and drained slower than the 5-minute sweep refilled.
-      limiter: { max: 10, duration: 60_000 },
+      // 2/min. NOT chosen from Meta's documented 750/hour — this account has been
+      // refused twice, on 2026-08-23 and 2026-08-26, and both walls followed sustained
+      // operation at 40-79 attempts per 10 minutes. Its highest clean throughput outside
+      // those two events is 20 per 10 minutes. Today's peak was 4.8/min, which a 6/min
+      // cap would have permitted unchanged — so 6 buys nothing. Burst rate is the
+      // trigger, and 750/hour is a ceiling this account demonstrably does not enjoy.
+      limiter: { max: 2, duration: 60_000 },
       settings: {
         backoffStrategy: (attemptsMade: number) =>
           BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],

@@ -53,6 +53,10 @@ interface SweepStat {
   matched: number;
   alreadyReplied: number;
   enqueued: number;
+  /** People this sweep saw, could have messaged, and ran out of budget for. */
+  truncated: number;
+  /** Comments Instagram would not name an author for. */
+  anonymised: number;
   errors: string[];
 }
 
@@ -98,6 +102,8 @@ export async function reconcileComments(): Promise<void> {
         matched: 0,
         alreadyReplied: 0,
         enqueued: 0,
+        truncated: 0,
+        anonymised: 0,
         errors: [errMessage(error)],
       })
     );
@@ -135,6 +141,8 @@ async function sweepCampaign(
     matched: 0,
     alreadyReplied: 0,
     enqueued: 0,
+    truncated: 0,
+    anonymised: 0,
     errors: [],
   };
 
@@ -181,9 +189,15 @@ async function sweepCampaign(
 
     // Keep only comments that (a) aren't the account's own, (b) match the
     // keyword, and (c) have no reply from the account owner yet.
+    let anonymised = 0;
     const needsAction = comments.filter((c) => {
       const authorId = c.from?.id;
-      if (!authorId || authorId === account.instagramId) return false;
+      // graph.instagram.com omits `from` for accounts the app cannot resolve — which is
+      // the same restricted, low-signal population webhooks already miss. Dropping them
+      // here cost 32 people permanently. The private reply does not need an author id at
+      // all: it targets recipient:{comment_id}. Only the NOT NULL commenterId column does.
+      if (authorId === account.instagramId) return false;
+      if (!authorId) anonymised += 1;
 
       const matched = automation.matchAnyWord
         ? true
@@ -213,16 +227,27 @@ async function sweepCampaign(
       where: {
         automationId: automation.id,
         commentId: { in: needsAction.map((c) => c.id) },
-        // SKIPPED_DEDUP is a decision, not a pending state: we chose not to
-        // message this comment because the person already got one. Without it in
-        // the handled set the sweep re-queues them every 5 minutes forever, which
-        // is exactly what made the queue grow faster than it drained on
-        // 2026-08-26 while real new comments waited behind the treadmill.
+        // "Handled" means a DECISION was reached, not that a row exists.
+        //
+        // This clause used to accept `publicReplySentAt != null` on its own. The public
+        // reply is posted BEFORE the DM and stamped immediately, so every comment whose
+        // DM then failed looked handled and was dropped from candidates forever. That is
+        // how 178 people ended up with a public "شيك الخاص" under their comment and no
+        // DM, invisible, at attempts=1, never retried once.
+        //
+        // Now: an explicit skip, a genuinely completed send, or a failure we have given
+        // up on after 3 real attempts. The attempts clause only works because failures
+        // now increment — the two changes are one fix and must not be split.
         OR: [
           { status: "SKIPPED_DEDUP" },
-          automation.publicReplyEnabled
-            ? { publicReplySentAt: { not: null } }
-            : { status: "SENT" },
+          { status: "SKIPPED_PLAN_LIMIT" },
+          {
+            status: "SENT",
+            ...(automation.publicReplyEnabled
+              ? { publicReplySentAt: { not: null } }
+              : {}),
+          },
+          { status: "FAILED", attempts: { gte: 3 } },
         ],
       },
       select: { commentId: true },
@@ -244,7 +269,7 @@ async function sweepCampaign(
           where: {
             automationId: automation.id,
             status: "SENT",
-            commenterId: { in: candidates.map((c) => c.from!.id) },
+            commenterId: { in: candidates.map((c) => c.from?.id ?? `anon_${c.id}`) },
           },
           select: { commenterId: true },
         })
@@ -255,16 +280,29 @@ async function sweepCampaign(
     const skipped: InstagramComment[] = [];
     const fresh = candidates
       .filter((c) => {
-        const who = c.from!.id;
-        if (alreadyMessaged.has(who) || seenThisSweep.has(who)) {
+        const who = c.from?.id ?? `anon_${c.id}`;
+        if (alreadyMessaged.has(who)) {
+          // Proven SENT for this person — a real decision, worth writing down.
           stat.alreadyReplied += 1;
           skipped.push(c);
+          return false;
+        }
+        if (seenThisSweep.has(who)) {
+          // Same person twice in ONE sweep. Their earliest comment is being enqueued
+          // right now and has not landed yet, so this is not a decision — it is a
+          // guess. Writing SKIPPED_DEDUP here made the later comments terminal before
+          // the first DM was even attempted, and every comment id carries its own
+          // private-reply allowance, so a failed first send burned the spares too.
+          // Leave it a candidate; the next sweep judges it against a real outcome.
+          stat.alreadyReplied += 1;
           return false;
         }
         seenThisSweep.add(who);
         return true;
       })
       .slice(0, MAX_NEW_PER_SWEEP);
+    stat.truncated = candidates.length - fresh.length - skipped.length;
+    stat.anonymised = anonymised;
 
     // Write the skip down so the next sweep can see it was a decision.
     for (const c of skipped) {
@@ -275,7 +313,7 @@ async function sweepCampaign(
             workspaceId: automation.workspaceId,
             automationId: automation.id,
             instagramAccountId: account.id,
-            commenterId: c.from!.id,
+            commenterId: c.from?.id ?? `anon_${c.id}`,
             commenterName: c.from?.username,
             commentText: c.text ?? "",
             commentId: c.id,
@@ -302,7 +340,7 @@ async function sweepCampaign(
         instagramAccountId: account.instagramId,
         commentId: c.id,
         commentText: c.text ?? "",
-        commenterId: c.from!.id,
+        commenterId: c.from?.id ?? `anon_${c.id}`,
         commenterName: c.from?.username,
         mediaId,
         source: "POLLING",
@@ -319,15 +357,21 @@ async function recordSweep(
   stat: SweepStat
 ): Promise<void> {
   // Only log when something happened or something went wrong.
-  if (stat.enqueued === 0 && stat.errors.length === 0) return;
+  if (stat.enqueued === 0 && stat.errors.length === 0 && stat.truncated === 0) return;
 
   await prisma.operationalEvent
     .create({
       data: {
         workspaceId,
         source: "SYSTEM",
-        level: stat.errors.length > 0 ? "WARNING" : "INFO",
-        message: `Comment sweep "${stat.campaign}" [${stat.keywords}]: ${stat.enqueued} enqueued, ${stat.matched} matched, ${stat.alreadyReplied} already replied`,
+        // Leaving people behind is not INFO. The old log said "30 enqueued, 95 matched"
+        // at INFO while 65 people waited, which is indistinguishable from a healthy sweep.
+        level: stat.errors.length > 0 || stat.truncated > 0 ? "WARNING" : "INFO",
+        message:
+          `Comment sweep "${stat.campaign}" [${stat.keywords}]: ${stat.enqueued} enqueued, ` +
+          `${stat.matched} matched, ${stat.alreadyReplied} already replied` +
+          (stat.truncated > 0 ? `, ${stat.truncated} LEFT BEHIND (budget)` : "") +
+          (stat.anonymised > 0 ? `, ${stat.anonymised} with no author id` : ""),
         payload: { ...stat },
       },
     })
