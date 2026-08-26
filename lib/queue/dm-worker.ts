@@ -1389,7 +1389,11 @@ export function createDMWorker(): Worker<DmQueueJob> {
       // This is a CEILING, not a promise: the adaptive throttle steps the real pace down
       // whenever Meta starts refusing, which is the actual safety mechanism. Raising this
       // number without that brake working is what produced the 26% failure.
-      limiter: { max: 5, duration: 60_000 },
+      // Back to 3/min. The 5/min reading that justified raising it was taken while TWO
+      // workers were running (a lapsed lock), so the account was really seeing ~7-8/min
+      // and the "40 clean minutes at 3.7/min" was 40 clean minutes at double that. The
+      // per-worker ceiling is lower than that measurement suggested.
+      limiter: { max: 3, duration: 60_000 },
       settings: {
         backoffStrategy: (attemptsMade: number) =>
           BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],
