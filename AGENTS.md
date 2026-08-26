@@ -26,6 +26,17 @@ Killing the worker mid-job makes BullMQ treat that job as stalled and re-run it.
 A re-run of a private reply that already landed is a duplicate DM to a real
 person, so check `getJobCounts` for `waiting`/`active` at 0 first.
 
+## Never raise the send rate without checking the brake
+
+The limiter is a ceiling (5/min); `lib/queue/adaptive-throttle.ts` governs the real pace.
+This account sustains ~4/min for ~25 minutes before Meta refuses — measured, not
+documented; the documented 750/hour does not apply here. Raising the ceiling while the
+brake was broken cost 145 people their DM over ninety minutes.
+
+Before touching the limiter, confirm the throttle actually records failures: it must be
+called from the SEND catch, not the rate-limiter catch. It was wired to the wrong one
+once, recorded only successes, and its silence read as health.
+
 ## Never bulk-retry a FAILED DM
 
 Meta returns a generic `Error 1: An unknown error has occurred` for private
@@ -34,6 +45,8 @@ comment. So `FAILED` in `dmLog` does **not** mean undelivered, and a retry canno
 repair the send — it only delivers a second copy. Verified once the hard way: a
 recipient got five identical DMs while every attempt logged FAILED.
 
+`wasMessageDelivered()` now runs before any FAILED row is written, so new rows are
+trustworthy. Historical rows were backfilled — 23 of 60 turned out to have been delivered.
 Before resending anything by hand, read the real thread —
 `INSTAGRAM_LIST_ALL_CONVERSATIONS` filtered by `user_id` = the row's
 `commenterId`, then `INSTAGRAM_LIST_ALL_MESSAGES`. Test exactly one before

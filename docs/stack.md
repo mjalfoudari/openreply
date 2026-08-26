@@ -100,7 +100,8 @@ post and enqueues anything that matches and has not been answered.
 
 ### Sends are paced
 
-The worker runs `concurrency: 2` behind a 10-per-minute limiter (600/hour). The hourly cap in
+The worker runs `concurrency: 2` behind a **5-per-minute limiter**, which is a ceiling
+rather than a target — see below. The hourly cap in
 `lib/utils/rate-limiter.ts` (750/hour, Meta's documented figure for private
 replies) says nothing about burst rate — firing ~80 sends in 90 seconds gets the
 tail throttled well under that cap. A backlog should drain over minutes.
@@ -154,6 +155,53 @@ Restart only when the queue is idle (`waiting` and `active` both 0). BullMQ trea
 a job killed mid-flight as stalled and re-runs it, and re-running a private reply
 that already landed delivers a duplicate to a real person. For the same reason,
 avoid `tsx watch` here: it would bounce the worker mid-send on every save.
+
+### The real send ceiling, and the brake
+
+Meta documents 750 private replies/hour (12.5/min). **This account does not get it.**
+Measured 2026-08-26 by raising the limiter and watching: it sustains **~4/min for about
+25 minutes**, then Meta starts refusing. Both refusals on record (08-23 and 08-26)
+followed sustained 4-7.9/min; the clean historical maximum outside them is 20 per 10
+minutes.
+
+The limiter is 5/min on purpose. The number that actually governs the pace is
+`lib/queue/adaptive-throttle.ts`: it watches the last 40 send outcomes and adds 5s per
+level when the failure rate crosses 15%, recovering a level per clean window. So the
+account bursts while Meta allows it and backs off within minutes when it does not.
+
+Do not raise the ceiling while the brake is broken. That is precisely the 2026-08-26
+sequence: limiter raised 6 → 10/min, the queue drained at ~180/hour, Meta refused 26% of
+sends for ninety minutes, 145 people got nothing — and the throttle written to prevent it
+was wired to the wrong catch block, so it recorded only successes and never engaged.
+
+**Only throttle-shaped errors count.** A vanished user or a deleted comment says nothing
+about our rate and is dropped from the window entirely; one unreachable recipient must
+never slow the queue for everyone.
+
+### Latency is what people actually feel
+
+Delivery was never the complaint people voiced. Latency was: median 33 min from comment
+to DM, p90 190 min, worst 12 hours — three people commented "ماوصل شي" after waiting
+170-239 minutes, all of whom had been sent the DM.
+
+Peak comment arrival on a live reel is 2.7/min against a median of 0.55/min, so during a
+reel the queue is the bottleneck, not Meta.
+
+Webhook jobs enqueue at `PRIORITY_LIVE`, sweep jobs at `PRIORITY_BACKLOG`. Note this was
+measured and did **not** fix the median: 105 of 161 queued jobs were already live, so
+ordering was not the constraint. It helps only when a real backlog exists. Throughput is
+the lever, and throughput is capped by the ceiling above.
+
+### A FAILED row does not mean undelivered
+
+Meta returns errors for private replies it has already delivered — errors 1, 2 and 100
+"the thread owner archived this conversation" have all been seen on messages that landed.
+`wasMessageDelivered()` asks the conversations API before anything is written as failed,
+and an unknown answer is treated as failure so nobody is written off as served.
+
+A backfill over the history found **23 of 60 FAILED rows had actually been delivered**.
+Before that check existed, `FAILED` meant nothing: it drove retries that sent one person
+five copies, and produced recovery lists that were five-sixths wrong.
 
 ### A failed private reply is never retried
 
