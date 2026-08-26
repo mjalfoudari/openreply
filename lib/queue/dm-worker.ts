@@ -1305,7 +1305,11 @@ export function createDMWorker(): Worker<DmQueueJob> {
       // seconds and Meta throttled the tail of it. A backlog should drain over
       // minutes, not seconds.
       concurrency: 2,
-      limiter: { max: 6, duration: 60_000 },
+      // 10/min = 600/hour, comfortably under Meta's documented 750 private
+      // replies/hour and 5x below the ~53/min burst that got the account
+      // throttled on 2026-08-23. 6/min was the panic setting straight after that
+      // incident and drained slower than the 5-minute sweep refilled.
+      limiter: { max: 10, duration: 60_000 },
       settings: {
         backoffStrategy: (attemptsMade: number) =>
           BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],

@@ -109,6 +109,7 @@ async function sweepCampaign(
   automation: {
     id: string;
     name: string;
+    workspaceId: string;
     postId: string | null;
     matchAnyPost: boolean;
     matchAnyWord: boolean;
@@ -212,9 +213,17 @@ async function sweepCampaign(
       where: {
         automationId: automation.id,
         commentId: { in: needsAction.map((c) => c.id) },
-        ...(automation.publicReplyEnabled
-          ? { publicReplySentAt: { not: null } }
-          : { status: "SENT" }),
+        // SKIPPED_DEDUP is a decision, not a pending state: we chose not to
+        // message this comment because the person already got one. Without it in
+        // the handled set the sweep re-queues them every 5 minutes forever, which
+        // is exactly what made the queue grow faster than it drained on
+        // 2026-08-26 while real new comments waited behind the treadmill.
+        OR: [
+          { status: "SKIPPED_DEDUP" },
+          automation.publicReplyEnabled
+            ? { publicReplySentAt: { not: null } }
+            : { status: "SENT" },
+        ],
       },
       select: { commentId: true },
     });
@@ -243,11 +252,13 @@ async function sweepCampaign(
     );
 
     const seenThisSweep = new Set<string>();
+    const skipped: InstagramComment[] = [];
     const fresh = candidates
       .filter((c) => {
         const who = c.from!.id;
         if (alreadyMessaged.has(who) || seenThisSweep.has(who)) {
           stat.alreadyReplied += 1;
+          skipped.push(c);
           return false;
         }
         seenThisSweep.add(who);
@@ -255,12 +266,38 @@ async function sweepCampaign(
       })
       .slice(0, MAX_NEW_PER_SWEEP);
 
+    // Write the skip down so the next sweep can see it was a decision.
+    for (const c of skipped) {
+      await prisma.dmLog
+        .upsert({
+          where: { automationId_commentId: { automationId: automation.id, commentId: c.id } },
+          create: {
+            workspaceId: automation.workspaceId,
+            automationId: automation.id,
+            instagramAccountId: account.id,
+            commenterId: c.from!.id,
+            commenterName: c.from?.username,
+            commentText: c.text ?? "",
+            commentId: c.id,
+            status: "SKIPPED_DEDUP",
+            errorMessage: "Already messaged this person for this campaign",
+          },
+          update: {},
+        })
+        .catch(() => {});
+    }
+
     for (const c of fresh) {
-      // No deterministic jobId here: a retained completed/failed job from an
-      // earlier sweep would otherwise be treated as a duplicate and silently
-      // drop this add, so the comment would never be retried. Dedup is handled
-      // above (owner-reply + DmLog guards) and the worker is idempotent
-      // (publicReplySentAt / SENT), so re-processing a comment is safe.
+      // Deterministic jobId + removeOnComplete: while a comment is still queued
+      // it cannot be queued again, and the moment it finishes the id frees up so
+      // a genuine retry is never blocked.
+      //
+      // Without this the sweep and the send rate fight each other: the sweep re-adds
+      // anything not yet marked handled every 5 minutes, the worker's limiter drains
+      // slower than that, and the queue inflates with copies of the same comment.
+      // Observed 2026-08-26: 537 queued jobs for 153 real comments, one comment
+      // queued 17 times. Harmless to recipients (the worker is idempotent) but new
+      // comments wait behind hundreds of duplicates.
       await queue.add("process-comment", {
         instagramAccountId: account.instagramId,
         commentId: c.id,
@@ -269,7 +306,7 @@ async function sweepCampaign(
         commenterName: c.from?.username,
         mediaId,
         source: "POLLING",
-      });
+      }, { jobId: `c_${automation.id}_${c.id}`, removeOnComplete: true });
       stat.enqueued += 1;
     }
   }
