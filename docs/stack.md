@@ -100,10 +100,49 @@ post and enqueues anything that matches and has not been answered.
 
 ### Sends are paced
 
-The worker runs `concurrency: 2` behind a 6-per-minute limiter. The hourly cap in
+The worker runs `concurrency: 2` behind a 10-per-minute limiter (600/hour). The hourly cap in
 `lib/utils/rate-limiter.ts` (750/hour, Meta's documented figure for private
 replies) says nothing about burst rate — firing ~80 sends in 90 seconds gets the
 tail throttled well under that cap. A backlog should drain over minutes.
+
+### Exactly one worker, and you can tell which code it runs
+
+The worker takes a **Redis singleton lock** (`openreply:worker:singleton`) at boot
+and refuses to start if another holds it, naming the holder. It refreshes on each
+heartbeat, releases on clean shutdown, and expires after 90s if the process is
+SIGKILLed. The lock is in Redis rather than a pidfile so it holds across machines.
+
+This exists because two workers ran for hours on 2026-08-26 without anyone
+noticing. `pkill` on the npm parent leaves the tsx child reparented to init and
+still sweeping, so every careless restart adds an instance. Two workers means two
+sweeps every 5 minutes, double the send rate, and a queue full of duplicates.
+
+Boot logs the running code:
+
+```
+[DM Worker] code 4ad5245+local-edits · owner Mohammads-MacBook-Air.local:78763
+```
+
+`+local-edits` means the tree has uncommitted changes; a bare sha means what runs
+is what is committed. Check this before concluding a fix is or is not live.
+
+### The queue can eat itself
+
+The sweep re-enqueues anything not yet marked handled, every 5 minutes. If the
+send limiter drains slower than that, the same comments pile up — 537 jobs for 153
+real comments, one queued 17 times, observed 2026-08-26. Two guards now:
+
+- **Deterministic job id** (`c_<automationId>_<commentId>`) with
+  `removeOnComplete`, so a comment cannot be queued twice while pending, and the
+  id frees the instant it finishes so real retries still work.
+- **A skip is recorded.** When the per-person guard drops a comment because that
+  person was already messaged, it writes a `SKIPPED_DEDUP` DmLog row, and that
+  status counts as handled. Without it those comments returned every sweep
+  forever and ate the send budget while new comments waited.
+
+If the queue is growing rather than draining, check duplication first: count
+waiting `process-comment` jobs against distinct `commentId`s. Anything above ~2x
+(webhook + polling for the same comment is normal) means a guard is broken.
 
 ### Restarting the worker
 

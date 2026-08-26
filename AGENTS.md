@@ -11,6 +11,10 @@ process (`npm run worker`), so **nothing you edit under `lib/` reaches the sende
 until that process is restarted.** A fix can be committed, green in tests, and
 still not live. Confirm with `ps aux | grep worker/dm-worker.ts`.
 
+A second worker cannot start — a Redis singleton lock refuses it and names the
+holder. Boot also prints `code <sha>` (with `+local-edits` when the tree is dirty),
+so check that line before concluding a fix is live.
+
 Restart only when the queue is idle:
 
 ```bash
