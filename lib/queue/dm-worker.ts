@@ -512,7 +512,12 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           data: {
             status: "PENDING",
             matchedKeyword: matchResult.matchedKeyword,
-            errorMessage: "Hourly rate limit hit; retry scheduled",
+            // Say which ceiling. Today cost hours to diagnostics that named the
+            // wrong cause, and a daily block waits ~24x longer than an hourly one.
+            errorMessage:
+              rateLimit.requeueDelayMs > 60 * 60 * 1000
+                ? `Daily send cap reached; retry in ${Math.round(rateLimit.requeueDelayMs / 3600_000)}h`
+                : "Hourly rate limit hit; retry scheduled",
           },
         });
 
