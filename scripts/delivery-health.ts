@@ -46,13 +46,19 @@ async function main() {
     where: { updatedAt: { gte: new Date(now - 30 * MIN) } },
     select: { status: true, errorMessage: true },
   });
-  const sent = recent.filter((r) => r.status === "SENT").length;
-  const failed = recent.filter((r) => r.status === "FAILED").length;
+  // A SENT row that still carries an errorMessage is dm-worker's "Meta errored but the
+  // conversations API proves it landed" case. The person is served, so it must NOT go on
+  // the owed list below — but Meta DID refuse, so it must still count here or this alarm
+  // goes quiet during exactly the 26%-refusal event it exists to catch.
+  const errored = (r: { status: string; errorMessage: string | null }) =>
+    r.status === "FAILED" || (r.status === "SENT" && r.errorMessage !== null);
+  const sent = recent.filter((r) => r.status === "SENT" && !r.errorMessage).length;
+  const failed = recent.filter(errored).length;
   if (sent + failed >= 10) {
     const rate = failed / (sent + failed);
     if (rate >= 0.1) {
       const top = Object.entries(
-        recent.filter((r) => r.status === "FAILED")
+        recent.filter(errored)
           .reduce<Record<string, number>>((a, r) => {
             const k = (r.errorMessage ?? "").slice(0, 45); a[k] = (a[k] ?? 0) + 1; return a;
           }, {})

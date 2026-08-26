@@ -396,6 +396,83 @@ export async function sendDirectMessageWithLinkButton(
   return handleResponse(response);
 }
 
+/**
+ * Did a message from US actually reach this person after `sinceMs`?
+ *
+ * Meta returns an error for private replies it has already delivered — error 1, error 2,
+ * and error 100 "the thread owner archived this conversation" have all been observed on
+ * messages that landed. Verified against the conversations API: one recipient held five
+ * copies while every attempt logged FAILED, and five of six people on a hand-checked
+ * "never received anything" list already had the DM.
+ *
+ * So a send error is a QUESTION, not an answer. This asks the only source that knows.
+ *
+ * Three things must ALL hold before this says yes, because a false yes marks a real
+ * person as served forever (comment-reconciler's alreadyMessaged and delivery-health's
+ * everSent are both keyed on status SENT):
+ *   1. the thread genuinely belongs to `recipientId` (participants, not data[0])
+ *   2. the newest message is FROM US, not from them — the campaign copy tells people to
+ *      check their DMs, so an inbound "لم استلم اي شي" lands in exactly this window
+ *   3. its timestamp sits inside the attempt window on BOTH sides
+ *
+ * Returns true/false, or null when the check itself could not be completed — null must be
+ * treated as "unknown", never as "delivered".
+ *
+ * ponytail: cannot tell OUR message for this comment from another send to the same person
+ * in the same seconds (a follow-gate re-prompt, a reveal postback). Correlating would need
+ * the message body, and a button template does not return one. Narrow window + one-private-
+ * reply-per-comment keeps the overlap small; revisit if duplicate-send reports appear.
+ */
+export async function wasMessageDelivered(
+  accessToken: string,
+  igUserId: string,
+  recipientId: string,
+  sinceMs: number
+): Promise<boolean | null> {
+  // Anonymised commenters (`anon_<commentId>`) are not Instagram user ids — there is
+  // nothing to match a thread against, and guessing is what marks people served.
+  if (!recipientId || recipientId.startsWith("anon_")) return null;
+
+  try {
+    // Ask for THIS person's thread by id rather than scanning the 50 newest. Scanning
+    // was tried and produced false negatives on threads older than the window — which
+    // is not a safe direction to be wrong in: it re-marks a delivered message FAILED,
+    // and the retry is what sends someone a second copy.
+    const convUrl = new URL(`${instagramGraphBase()}/${igUserId}/conversations`);
+    convUrl.searchParams.set("platform", "instagram");
+    convUrl.searchParams.set("user_id", recipientId);
+    convUrl.searchParams.set(
+      "fields",
+      "participants,messages.limit(5){from,created_time}"
+    );
+    convUrl.searchParams.set("access_token", accessToken);
+    const conv = await fetch(convUrl.toString());
+    if (!conv.ok) return null;
+    const threads = (await conv.json())?.data ?? [];
+    if (!threads.length) return false; // no thread with this person — nothing was delivered
+
+    // Never trust the filter blindly: confirm this thread really is theirs. If the
+    // participants do not include them, treat it as unknown rather than as delivered.
+    const thread = threads.find((t: { participants?: { data?: { id?: string }[] } }) =>
+      (t.participants?.data ?? []).some((p) => p.id === recipientId)
+    );
+    if (!thread) return null;
+
+    // Ours, and after the attempt. Checking the SENDER is the whole point: without it a
+    // reply from the recipient — "لم استلم اي شي" is the literal case — would mark them
+    // served, permanently, which is worse than the bug this exists to fix.
+    const msgs: { from?: { id?: string }; created_time?: string }[] =
+      thread.messages?.data ?? [];
+    return msgs.some((m) => {
+      if (m.from?.id !== igUserId || !m.created_time) return false;
+      const at = Date.parse(m.created_time);
+      return at >= sinceMs - 1000 && at <= Date.now() + 1000;
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function sendCommentReply(
   accessToken: string,
   commentId: string,

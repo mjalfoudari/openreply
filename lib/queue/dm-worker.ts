@@ -24,6 +24,7 @@ import {
   sendPrivateReply,
   sendPrivateReplyWithButton,
   sendPrivateReplyWithLinkButton,
+  wasMessageDelivered,
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
@@ -553,6 +554,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // same rate while every send fails; this waits when the failure rate says to.
     await throttleGate();
 
+    const attemptedAt = Date.now();
+
     try {
       if (useOpeningDm) {
         const openingText = renderMessageWithTracking({
@@ -664,9 +667,44 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
       });
     } catch (error) {
-      // THE send failure. The throttle exists for exactly this catch — wiring it to the
-      // rate-limiter catch instead (as the first version of this did) leaves the outcome
-      // window pure `true`, so the brake never engages and its silence reads as health.
+      // Meta reports failure for private replies it has already delivered. Before writing
+      // FAILED — which is what makes a person look owed, drives the retry, and produces
+      // the duplicate DMs people complain about — ask the conversations API whether the
+      // message actually landed.
+      const delivered = await wasMessageDelivered(
+        accessToken,
+        automation.instagramAccount.instagramId,
+        commenterId,
+        attemptedAt
+      );
+
+      if (delivered === true) {
+        // It landed. Recording FAILED here is what sent one person five copies.
+        //
+        // Still record the outcome as a FAILURE for the throttle: delivery says nothing
+        // about account health, and "archived this conversation" is THE signature of the
+        // 2026-08-26 refusal. Feeding `true` here would remove a false AND add a true to
+        // the outcome window — a double swing that keeps the brake at level 0 through
+        // exactly the event it was built for.
+        throttleRecord(false, formatError(error));
+        await prisma.dmLog.update({
+          where: {
+            automationId_commentId: { automationId: automation.id, commentId },
+          },
+          data: {
+            status: "SENT",
+            dmSentAt: new Date(),
+            errorMessage: `Meta reported an error but the message was delivered: ${formatError(error).slice(0, 120)}`,
+          },
+        });
+        console.log(`[DM Worker] ${commentId}: Meta reported failure, message verified delivered`);
+        // continue, not return: this is the success path. Returning would skip the
+        // remaining campaigns' public replies.
+        continue;
+      }
+
+      // Genuinely not delivered (false), or the check could not be completed (null).
+      // null is treated as a real failure so nobody is quietly written off as delivered.
       throttleRecord(false, formatError(error));
       await releaseWorkspaceDMReservation(
         automation.workspaceId,

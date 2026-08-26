@@ -15,6 +15,7 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockWasMessageDelivered,
 } = vi.hoisted(() => ({
   mockPrisma: {
     automation: {
@@ -48,6 +49,7 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockWasMessageDelivered: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -63,6 +65,7 @@ vi.mock("@/lib/meta/client", () => ({
   sendDirectMessage: mockSendDirectMessage,
   sendDirectMessageWithLinkButton: mockSendDirectMessageWithLinkButton,
   sendCommentReply: vi.fn(),
+  wasMessageDelivered: mockWasMessageDelivered,
   MetaApiError: class MetaApiError extends Error {
     code: number;
     constructor(
@@ -210,6 +213,8 @@ function createMockPostbackJob(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: the delivery check finds nothing, so a send error stays a send error.
+  mockWasMessageDelivered.mockResolvedValue(false);
 
   mockPrisma.automation.findMany.mockResolvedValue([mockAutomation]);
   mockPrisma.automation.findFirst.mockResolvedValue(null);
@@ -465,6 +470,49 @@ describe("DM Worker — Full Pipeline", () => {
         errorMessage: "API Error",
       }),
     });
+  });
+
+  // Meta reports failure for private replies it has already delivered — error 1, 2 and
+  // 100 have all been seen on messages that landed. Writing FAILED then is what made one
+  // person receive five copies and put five already-served people on a "never received"
+  // list.
+  it("records SENT when Meta reports failure but the message was actually delivered", async () => {
+    mockSendPrivateReply.mockRejectedValue(new Error("Meta API Error 1: An unknown error has occurred."));
+    mockWasMessageDelivered.mockResolvedValue(true);
+
+    const processor = getProcessor();
+    await expect(processor(createMockJob())).resolves.toBeUndefined();
+
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "SENT" }) })
+    );
+    expect(mockReleaseWorkspaceDMReservation).not.toHaveBeenCalled();
+  });
+
+  it("still records FAILED when the delivery check says nothing arrived", async () => {
+    mockSendPrivateReply.mockRejectedValue(new Error("Meta API Error 1"));
+    mockWasMessageDelivered.mockResolvedValue(false);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "FAILED" }) })
+    );
+  });
+
+  // An unknown answer must never be read as "delivered" — that would silently write
+  // someone off as served when they got nothing.
+  it("treats an inconclusive delivery check as a failure", async () => {
+    mockSendPrivateReply.mockRejectedValue(new Error("Meta API Error 1"));
+    mockWasMessageDelivered.mockResolvedValue(null);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "FAILED" }) })
+    );
   });
 
   it("should handle missing access token", async () => {
