@@ -19,6 +19,12 @@ import os from "node:os";
 const LOCK_KEY = "openreply:worker:singleton";
 const LOCK_TTL_MS = 90_000;
 const OWNER = `${os.hostname()}:${process.pid}`;
+/**
+ * Per-instance liveness key. The shared heartbeat is a single value every worker
+ * overwrites, so two instances look exactly like one — which is how a duplicate ran
+ * unnoticed for hours, twice in one day. One TTL'd key per owner makes them countable.
+ */
+const ALIVE_KEY = `openreply:worker:alive:${OWNER}`;
 
 function codeVersion(): string {
   try {
@@ -94,6 +100,7 @@ async function start() {
   async function heartbeat() {
     try {
       await refreshLock();
+      await getRedisConnection().set(ALIVE_KEY, new Date().toISOString(), "PX", LOCK_TTL_MS);
       await recordWorkerHeartbeat({
         pid: process.pid,
         hostname: os.hostname(),
@@ -126,6 +133,7 @@ async function start() {
     clearInterval(heartbeatTimer);
     clearInterval(pollTimer);
     await worker.close();
+    await getRedisConnection().del(ALIVE_KEY).catch(() => {});
     await releaseLock().catch(() => {});
     process.exit(0);
   }

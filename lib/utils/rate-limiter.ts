@@ -18,6 +18,20 @@ import Redis from "ioredis";
 
 const RATE_LIMIT_MAX = 750; // private replies per hour, per Meta's documented cap
 const RATE_LIMIT_WINDOW = 3600; // 1 hour in seconds
+
+/**
+ * Daily ceiling. Meta documents no such limit, but the account behaves as if one
+ * exists: measured over 2026-08-20..26, every day at or under ~250 sends drew zero
+ * refusals, while the day that reached ~1,380 (a backlog drain) drew repeated waves
+ * of account-level soft blocks, each lasting 1-2 hours. The hourly cap cannot see
+ * this — 150/hour was refused nothing in the morning and refused 90% by evening.
+ *
+ * 500 sits above any normal day's traffic and only bites during a backlog drain,
+ * which is exactly when we get blocked. The window is rolling from the first send,
+ * not a calendar day, so it cannot be reset by waiting for midnight.
+ */
+export const DAILY_LIMIT_MAX = 500;
+const DAILY_LIMIT_WINDOW = 86400; // 24 hours in seconds
 const REQUEUE_DELAY_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_REQUEUE_ATTEMPTS = 3;
 
@@ -42,21 +56,38 @@ export interface RateLimitResult {
   reserved: boolean;
 }
 
+// Returns {allowed, hourly_count, hourly_remaining, daily_retry_after}.
+// daily_retry_after is 0 unless the DAILY cap is what blocked, in which case it
+// carries the seconds until that window rolls over — the only honest retry delay.
 const RESERVE_DM_SLOT_SCRIPT = `
-local current = tonumber(redis.call("GET", KEYS[1]) or "0")
-local max = tonumber(ARGV[1])
-local ttl = tonumber(ARGV[2])
+local hourly = tonumber(redis.call("GET", KEYS[1]) or "0")
+local daily = tonumber(redis.call("GET", KEYS[2]) or "0")
+local hourly_max = tonumber(ARGV[1])
+local hourly_ttl = tonumber(ARGV[2])
+local daily_max = tonumber(ARGV[3])
+local daily_ttl = tonumber(ARGV[4])
 
-if current >= max then
-  return {0, current, 0}
+if daily >= daily_max then
+  local left = redis.call("TTL", KEYS[2])
+  if left < 0 then left = daily_ttl end
+  return {0, hourly, 0, left}
+end
+
+if hourly >= hourly_max then
+  return {0, hourly, 0, 0}
 end
 
 local next_count = redis.call("INCR", KEYS[1])
 if next_count == 1 then
-  redis.call("EXPIRE", KEYS[1], ttl)
+  redis.call("EXPIRE", KEYS[1], hourly_ttl)
 end
 
-return {1, next_count, max - next_count}
+local next_daily = redis.call("INCR", KEYS[2])
+if next_daily == 1 then
+  redis.call("EXPIRE", KEYS[2], daily_ttl)
+end
+
+return {1, next_count, hourly_max - next_count, 0}
 `;
 
 function toScriptNumber(value: unknown): number {
@@ -160,20 +191,39 @@ export async function reserveDMSlot(
 ): Promise<RateLimitResult> {
   const client = getRedis();
   const key = `rate:dm:${instagramAccountId}`;
+  const dailyKey = `rate:dm:daily:${instagramAccountId}`;
 
   const result = await client.eval(
     RESERVE_DM_SLOT_SCRIPT,
-    1,
+    2,
     key,
+    dailyKey,
     RATE_LIMIT_MAX,
-    RATE_LIMIT_WINDOW
+    RATE_LIMIT_WINDOW,
+    DAILY_LIMIT_MAX,
+    DAILY_LIMIT_WINDOW
   );
   const values = Array.isArray(result) ? result : [];
   const allowedFlag = toScriptNumber(values[0]);
   const count = toScriptNumber(values[1]);
   const remaining = toScriptNumber(values[2]);
+  const dailyRetryAfter = toScriptNumber(values[3]);
 
   if (allowedFlag !== 1) {
+    // A daily block always requeues, however many times it has already bounced:
+    // skipping would strand someone for a ceiling that lifts on its own within a
+    // day, well inside Instagram's 7-day private-reply window.
+    if (dailyRetryAfter > 0) {
+      return {
+        allowed: false,
+        currentCount: count,
+        remainingDMs: 0,
+        shouldRequeue: true,
+        requeueDelayMs: (dailyRetryAfter + 60) * 1000,
+        shouldSkip: false,
+        reserved: false,
+      };
+    }
     return blockedResult(count, requeueAttempt);
   }
 

@@ -32,6 +32,7 @@ import {
   incrementDMCounter,
   reserveDMSlot,
   RATE_LIMIT_MAX,
+  DAILY_LIMIT_MAX,
 } from "../lib/utils/rate-limiter";
 
 beforeEach(() => {
@@ -91,10 +92,13 @@ describe("reserveDMSlot", () => {
 
     expect(mockEval).toHaveBeenCalledWith(
       expect.any(String),
-      1,
+      2,
       "rate:dm:account_123",
+      "rate:dm:daily:account_123",
       RATE_LIMIT_MAX,
-      3600
+      3600,
+      DAILY_LIMIT_MAX,
+      86400
     );
     expect(result.allowed).toBe(true);
     expect(result.reserved).toBe(true);
@@ -133,4 +137,40 @@ describe("incrementDMCounter", () => {
     expect(mockEval).toHaveBeenCalled();
     expect(count).toBe(51);
   });
+});
+
+describe("daily cap", () => {
+  // The script signals a daily block by returning a non-zero retry-after in slot 4.
+  const dailyBlocked = (secondsLeft: number) => [0, 500, 0, secondsLeft];
+
+  it("requeues rather than skipping, even after the requeue attempts are spent", async () => {
+    mockEval.mockResolvedValue(dailyBlocked(3600));
+
+    const result = await reserveDMSlot("account_123", 99);
+
+    expect(result.allowed).toBe(false);
+    expect(result.reserved).toBe(false);
+    // Skipping here would strand a commenter for a ceiling that lifts within a day,
+    // well inside Instagram's 7-day private-reply window.
+    expect(result.shouldSkip).toBe(false);
+    expect(result.shouldRequeue).toBe(true);
+  });
+
+  it("waits out the real window, not the fixed 30-minute bounce", async () => {
+    mockEval.mockResolvedValue(dailyBlocked(7200));
+
+    const result = await reserveDMSlot("account_123");
+
+    expect(result.requeueDelayMs).toBe((7200 + 60) * 1000);
+  });
+
+  it("still defers to the hourly path when the daily cap is not the blocker", async () => {
+    mockEval.mockResolvedValue([0, RATE_LIMIT_MAX, 0, 0]);
+
+    const result = await reserveDMSlot("account_123", 0);
+
+    expect(result.shouldRequeue).toBe(true);
+    expect(result.requeueDelayMs).toBe(30 * 60 * 1000);
+  });
+
 });

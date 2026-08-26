@@ -40,6 +40,19 @@ async function main() {
     }
   }
 
+  // 1b. More than one worker. Two instances double the send rate and split the throttle's
+  //     view of failures between two private windows, so neither brake can hold the line.
+  //     It has happened twice; both times it was invisible for hours.
+  try {
+    const { getRedisConnection } = await import("@/lib/queue/client");
+    const alive = await getRedisConnection().keys("openreply:worker:alive:*");
+    if (alive.length > 1) {
+      flag("ERROR", `${alive.length} workers are alive at once (${alive.map((k) => k.split(":").pop()).join(", ")}) — they double the send rate and blind the throttle`);
+    } else if (alive.length === 0 && queue.waiting > 0) {
+      flag("ERROR", `no worker heartbeat, ${queue.waiting} jobs waiting`);
+    }
+  } catch { /* redis unavailable — the other checks still run */ }
+
   // 2. Send failure rate. This is the check that would have caught the 26% refusal in
   //    minutes instead of ninety.
   const recent = await prisma.dmLog.findMany({

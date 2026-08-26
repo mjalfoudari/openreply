@@ -26,7 +26,12 @@ const TRIP = 0.15;
 const CLEAR = 0.05;
 /** Extra pause per level, before each send. Level 0 adds nothing. */
 const STEP_MS = 5_000;
-const MAX_LEVEL = 6;
+/**
+ * Ceiling on the brake. Was 6 (+30s per send); on 2026-08-26 the throttle sat pinned
+ * at 6 while still failing 90%, which is a brake that has run out of travel. 12 lets it
+ * fall to roughly one send a minute before giving up on slowing down.
+ */
+const MAX_LEVEL = 12;
 /** Judge only on a meaningful sample, or a single early failure trips everything. */
 const MIN_SAMPLE = 10;
 
