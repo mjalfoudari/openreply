@@ -27,6 +27,7 @@ import {
 } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
+import { gate as throttleGate, record as throttleRecord } from "@/lib/queue/adaptive-throttle";
 import { reserveDMSlot } from "@/lib/utils/rate-limiter";
 import {
   releaseWorkspaceDMReservation,
@@ -455,6 +456,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     try {
       rateLimit = await reserveDMSlot(instagramAccountId, requeueAttempt);
     } catch (error) {
+      throttleRecord(false, formatError(error));
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
         usage.periodStart
@@ -546,6 +548,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       const alreadyFollows = await getUserFollowStatus(accessToken, commenterId);
       sendFollowPrompt = alreadyFollows !== true;
     }
+
+    // Slow down if Meta has started refusing sends. A fixed limiter keeps firing at the
+    // same rate while every send fails; this waits when the failure rate says to.
+    await throttleGate();
 
     try {
       if (useOpeningDm) {
@@ -643,6 +649,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         );
       }
 
+      throttleRecord(true);
       await prisma.dmLog.update({
         where: {
           automationId_commentId: {
