@@ -21,4 +21,4 @@ PYTHON="${PYTHON_BIN:-/opt/homebrew/bin/python3}"
 NPX="${NPX_BIN:-/Users/mj/.local/bin/npx}"
 
 cd "$REPO"
-"$PYTHON" "$BANKS/rotate.py" 40 | "$NPX" tsx --env-file=.env scripts/apply-replies.ts
+"$PYTHON" "$BANKS/rotate.py" 100 | "$NPX" tsx --env-file=.env scripts/apply-replies.ts

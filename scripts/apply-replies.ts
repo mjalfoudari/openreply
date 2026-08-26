@@ -27,11 +27,21 @@ async function main() {
 
   const autos = await prisma.automation.findMany({
     where: { isActive: true },
-    select: { id: true, name: true },
+    select: { id: true, name: true, publicReplyMessages: true },
     orderBy: { createdAt: "asc" },
   });
   if (autos.length > sheets.length) {
     throw new Error(`${autos.length} campaigns but only ${sheets.length} sheets — draw more`);
+  }
+
+  // New campaigns need no registration: this reads isActive at run time, so anything
+  // built since the last rotation is picked up automatically. The flip side is that
+  // rotation OVERWRITES rows — hand-tuned reply copy on a campaign survives at most
+  // 12 hours. Pin such a campaign by pausing it, or keep the copy in the bank so every
+  // draw can produce it.
+  const fresh = autos.filter((a) => a.publicReplyMessages.length !== 10);
+  if (fresh.length) {
+    console.log(`[rotate] first rotation for: ${fresh.map((f) => f.name).join(", ")}`);
   }
 
   for (const [i, a] of autos.entries()) {
