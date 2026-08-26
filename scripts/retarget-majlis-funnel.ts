@@ -182,7 +182,7 @@ async function main() {
         data: { destinationUrl: campaign.destinationUrl },
       });
     }
-  });
+  }, { timeout: 30_000 });
 
   console.log(`[majlis-funnel] updated ${changes.length} campaigns`);
 }
