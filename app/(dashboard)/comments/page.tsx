@@ -41,7 +41,19 @@ export default function CommentsPage() {
         const res = await fetch(`/api/triage/comments?view=${view}`, { cache: "no-store" });
         const data = await res.json();
         if (data.success) {
-          setComments(data.data.comments);
+          if (silent) {
+            // Merge-only: append genuinely new rows, never reorder/replace
+            // rows already on screen (that's the whole point of this page).
+            setComments((prev) => {
+              const seen = new Set(prev.map((c) => c.id));
+              const fresh = data.data.comments.filter(
+                (c: TriagedCommentListItem) => !seen.has(c.id)
+              );
+              return fresh.length ? [...prev, ...fresh] : prev;
+            });
+          } else {
+            setComments(data.data.comments);
+          }
           setError(null);
         } else if (!silent) {
           setError(data.error ?? "Failed to load comments");
