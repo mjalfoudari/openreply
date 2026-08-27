@@ -114,4 +114,38 @@ describe("sweepTriageComments", () => {
 
     expect(mockPrisma.triagedComment.create).not.toHaveBeenCalled();
   });
+
+  it("still sweeps a post older than the lookback window (comment-level filtering handles recency, not post age)", async () => {
+    const oldPost = { ...post, timestamp: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() }; // 30 days old
+    mockGetUserMedia.mockResolvedValue([oldPost]);
+    mockPrisma.triagedComment.findMany.mockResolvedValue([]);
+    mockGetRecentMediaComments.mockResolvedValue([
+      { id: "c1", text: "a brand new comment on an old post", timestamp: new Date().toISOString(), from: { id: "u1" } },
+    ]);
+    mockClassifyComments.mockResolvedValue(new Map([["c1", "GENUINE"]]));
+
+    await sweepTriageComments();
+
+    expect(mockGetRecentMediaComments).toHaveBeenCalledWith("decrypted-token", oldPost.id, expect.any(Number));
+    expect(mockPrisma.triagedComment.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ commentId: "c1", classification: "GENUINE" }) })
+    );
+  });
+
+  it("still processes a second post's comments when the first post's comment fetch fails", async () => {
+    const post2 = { ...post, id: "media_2" };
+    mockGetUserMedia.mockResolvedValue([post, post2]);
+    mockPrisma.triagedComment.findMany.mockResolvedValue([]);
+    mockGetRecentMediaComments.mockImplementation(async (_token: string, mediaId: string) => {
+      if (mediaId === "media_1") throw new Error("transient Graph API error");
+      return [{ id: "c2", text: "a real comment on the second post", timestamp: new Date().toISOString(), from: { id: "u2" } }];
+    });
+    mockClassifyComments.mockResolvedValue(new Map([["c2", "GENUINE"]]));
+
+    await sweepTriageComments();
+
+    expect(mockPrisma.triagedComment.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ commentId: "c2" }) })
+    );
+  });
 });
