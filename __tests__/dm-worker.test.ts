@@ -12,6 +12,7 @@ const {
   mockDecryptToken,
   mockMatchKeywords,
   mockReserveDMSlot,
+  mockSendCommentReply,
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
@@ -46,6 +47,7 @@ const {
   mockDecryptToken: vi.fn(),
   mockMatchKeywords: vi.fn(),
   mockReserveDMSlot: vi.fn(),
+  mockSendCommentReply: vi.fn(),
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
@@ -64,7 +66,7 @@ vi.mock("@/lib/meta/client", () => ({
   sendDirectMessageWithButton: mockSendDirectMessageWithButton,
   sendDirectMessage: mockSendDirectMessage,
   sendDirectMessageWithLinkButton: mockSendDirectMessageWithLinkButton,
-  sendCommentReply: vi.fn(),
+  sendCommentReply: mockSendCommentReply,
   wasMessageDelivered: mockWasMessageDelivered,
   MetaApiError: class MetaApiError extends Error {
     code: number;
@@ -1194,5 +1196,60 @@ describe("DM Worker — DM keyword trigger", () => {
         create: expect.objectContaining({ status: "FAILED" }),
       })
     );
+  });
+});
+
+describe("DM Worker — public reply follows the DM", () => {
+  // The public reply says "check your DM". Posted before the send, it said that a
+  // median of 105 minutes early (405 sends, 2026-08-27) and people answered in the
+  // comments that nothing had arrived. They were right when they looked.
+  const chatty = {
+    ...mockAutomation,
+    publicReplyEnabled: true,
+    publicReplyMessages: ["شيك خاصك"],
+  };
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([chatty]);
+  });
+
+  it("posts the comment reply only after the DM is actually sent", async () => {
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+    expect(mockSendCommentReply).toHaveBeenCalled();
+    expect(mockSendPrivateReply.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSendCommentReply.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("still posts it when the DM fails — the comment is the only channel left", async () => {
+    mockSendPrivateReply.mockRejectedValue(new Error("boom"));
+    mockWasMessageDelivered.mockResolvedValue(false);
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendCommentReply).toHaveBeenCalled();
+  });
+
+  it("stays silent when the DM is deferred, rather than promising it early", async () => {
+    mockReserveDMSlot.mockResolvedValue({
+      allowed: false,
+      currentCount: 750,
+      remainingDMs: 0,
+      shouldRequeue: true,
+      requeueDelayMs: 30 * 60 * 1000,
+      shouldSkip: false,
+      reserved: false,
+    });
+
+    const processor = getProcessor();
+    await processor(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    // Promising a DM that is still hours away is the bug this ordering fixes.
+    expect(mockSendCommentReply).not.toHaveBeenCalled();
   });
 });

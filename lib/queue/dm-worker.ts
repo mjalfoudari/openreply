@@ -358,20 +358,32 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       });
     }
 
-    // Public reply leg — decoupled from the DM and posted first so a DM failure
-    // (e.g. a non-follower whose messaging is restricted) never suppresses it.
-    // Idempotent across retries via publicReplySentAt.
+    // Public reply leg — decoupled from the DM, but posted AFTER it rather than
+    // before. The public reply says "check your DM"; posting it first meant we
+    // said that a median of 105 minutes before the DM arrived (measured over 405
+    // sends on 2026-08-27, 60% of them more than half an hour apart). People did
+    // what it told them, found an empty inbox, and said so publicly.
+    //
+    // It still runs on the DM's failure path, which is the property the
+    // post-it-first ordering was protecting: a DM we cannot deliver (a restricted
+    // recipient, a spent private-reply window) must not silence the comment reply
+    // as well. Idempotent across retries via publicReplySentAt.
     const replyPool =
       automation.publicReplyMessages.length > 0
         ? automation.publicReplyMessages
         : automation.publicReplyMessage
           ? [automation.publicReplyMessage]
           : [];
-    if (
-      automation.publicReplyEnabled &&
-      replyPool.length > 0 &&
-      !existingLog?.publicReplySentAt
-    ) {
+    let publicReplyPosted = Boolean(existingLog?.publicReplySentAt);
+    const postPublicReply = async () => {
+      if (
+        !automation.publicReplyEnabled ||
+        replyPool.length === 0 ||
+        publicReplyPosted
+      ) {
+        return;
+      }
+      publicReplyPosted = true;
       try {
         const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
         const publicReply = renderMessageWithTracking({
@@ -391,6 +403,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           "[DM Worker] Public comment reply failed:",
           formatError(error)
         );
+        publicReplyPosted = false; // let a later pass retry it
         await prisma.dmLog
           .update({
             where: {
@@ -400,11 +413,14 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           })
           .catch(() => {});
       }
-    }
+    };
 
-    // DM already sent on an earlier pass; the public reply retry above was all
-    // this run needed. Don't re-send the DM.
-    if (!needsDm) continue;
+    // DM already sent on an earlier pass, so this run exists only to retry the
+    // public reply. Nothing is being promised ahead of itself here.
+    if (!needsDm) {
+      await postPublicReply();
+      continue;
+    }
 
     // Meta allows exactly ONE private reply per comment, ever — across every
     // campaign. When several campaigns match the same comment (duplicated
@@ -671,6 +687,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: null,
         },
       });
+      // The DM is in their inbox — now it is honest to say so publicly.
+      await postPublicReply();
     } catch (error) {
       // Meta reports failure for private replies it has already delivered. Before writing
       // FAILED — which is what makes a person look owed, drives the retry, and produces
@@ -703,6 +721,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           },
         });
         console.log(`[DM Worker] ${commentId}: Meta reported failure, message verified delivered`);
+        await postPublicReply();
         // continue, not return: this is the success path. Returning would skip the
         // remaining campaigns' public replies.
         continue;
@@ -740,6 +759,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       // first. Observed 2026-08-23: one recipient received five identical DMs
       // while every attempt logged FAILED. The row stays FAILED for review;
       // verify against the real inbox before ever resending by hand.
+      //
+      // The public reply still goes out: this person is not getting a DM, so the
+      // comment is the only channel left to answer them on.
+      await postPublicReply();
       return;
     }
   }
