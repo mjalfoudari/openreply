@@ -20,17 +20,25 @@ const RATE_LIMIT_MAX = 750; // private replies per hour, per Meta's documented c
 const RATE_LIMIT_WINDOW = 3600; // 1 hour in seconds
 
 /**
- * Daily ceiling. Meta documents no such limit, but the account behaves as if one
- * exists: measured over 2026-08-20..26, every day at or under ~250 sends drew zero
- * refusals, while the day that reached ~1,380 (a backlog drain) drew repeated waves
- * of account-level soft blocks, each lasting 1-2 hours. The hourly cap cannot see
- * this — 150/hour was refused nothing in the morning and refused 90% by evening.
+ * Daily ceiling.
  *
- * 500 sits above any normal day's traffic and only bites during a backlog drain,
- * which is exactly when we get blocked. The window is rolling from the first send,
- * not a calendar day, so it cannot be reset by waiting for midnight.
+ * Meta documents no daily limit, but the account behaves as if one exists: on
+ * 2026-08-26 a backlog drain reaching ~1,380 sends drew repeated waves of
+ * account-level soft blocks, each lasting 1-2 hours. Set to 500 that evening,
+ * while still in the fire.
+ *
+ * Raised to 750 on 08-27 on a day of clean evidence: 352 sends, zero soft blocks,
+ * one worker at ~3/min. That day also weakens the original reading — the 08-26
+ * blocks coincided with TWO workers running for two hours at double the intended
+ * rate, so rate, not daily volume, may have been the real trigger. 750 is still
+ * roughly half the day that broke, and the adaptive throttle plus the 15-minute
+ * health check are the backstop if this proves too high.
+ *
+ * Raise it one step at a time, one variable at a time, and only after a clean day.
+ * The window rolls from the first send, not from midnight, so it cannot be reset
+ * by waiting for a calendar day to turn over.
  */
-export const DAILY_LIMIT_MAX = 500;
+export const DAILY_LIMIT_MAX = 750;
 const DAILY_LIMIT_WINDOW = 86400; // 24 hours in seconds
 const REQUEUE_DELAY_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_REQUEUE_ATTEMPTS = 3;
