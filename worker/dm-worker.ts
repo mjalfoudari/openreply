@@ -1,6 +1,7 @@
 import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
+import { sweepTriageComments } from "@/lib/triage/ingest";
 import { getRedisConnection } from "@/lib/queue/client";
 import { execSync } from "node:child_process";
 import os from "node:os";
@@ -128,10 +129,29 @@ async function start() {
   setTimeout(() => void poll(), 10_000);
   const pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
+  const TRIAGE_POLL_INTERVAL_MS = Number(
+    process.env.TRIAGE_POLL_INTERVAL_MS ?? 5 * 60_000
+  );
+
+  async function triagePoll() {
+    try {
+      await sweepTriageComments();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error("[DM Worker] Comment triage sweep failed:", message);
+    }
+  }
+
+  // Independent of the DM-automation comment poll above — see ingest.ts's
+  // module comment for why these two sweeps don't share state.
+  setTimeout(() => void triagePoll(), 15_000);
+  const triagePollTimer = setInterval(() => void triagePoll(), TRIAGE_POLL_INTERVAL_MS);
+
   async function shutdown(signal: string) {
     console.log(`[DM Worker] ${signal} received, closing worker`);
     clearInterval(heartbeatTimer);
     clearInterval(pollTimer);
+    clearInterval(triagePollTimer);
     await worker.close();
     await getRedisConnection().del(ALIVE_KEY).catch(() => {});
     await releaseLock().catch(() => {});

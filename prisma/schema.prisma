@@ -84,6 +84,7 @@ model Workspace {
   linkClicks        LinkClick[]
   webhookEvents     WebhookEvent[]
   operationalEvents OperationalEvent[]
+  triagedComments   TriagedComment[]
 
   @@index([ownerId])
 }
@@ -141,6 +142,7 @@ model InstagramAccount {
   dmLogs      DmLog[]
   linkClicks  LinkClick[]
   followerSnapshots FollowerSnapshot[]
+  triagedComments TriagedComment[]
 
   @@index([workspaceId])
 }
@@ -385,4 +387,47 @@ enum OperationalEventLevel {
   INFO
   WARNING
   ERROR
+}
+
+enum CommentPlatform {
+  INSTAGRAM
+  YOUTUBE
+}
+
+enum CommentClassification {
+  KEYWORD_MATCH
+  GENUINE
+  LOW_EFFORT
+  SPAM
+}
+
+enum CommentStatus {
+  PENDING
+  HANDLED
+  DISMISSED
+}
+
+model TriagedComment {
+  id                 String   @id @default(cuid())
+  workspaceId        String
+  platform           CommentPlatform @default(INSTAGRAM)
+  instagramAccountId String?
+  mediaId            String
+  mediaThumbnailUrl  String?
+  mediaCaption       String?
+  commentId          String   @unique
+  authorUsername     String?
+  text               String
+  createdAt          DateTime
+  classification     CommentClassification
+  status             CommentStatus @default(PENDING)
+  repliedText        String?
+  handledAt          DateTime?
+  fetchedAt          DateTime @default(now())
+
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  instagramAccount InstagramAccount? @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, createdAt])
+  @@index([mediaId])
 }
