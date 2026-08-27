@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { mockCreate } = vi.hoisted(() => ({ mockCreate: vi.fn() }));
 
-vi.mock("@anthropic-ai/sdk", () => ({
-  default: class Anthropic {
-    messages = { create: mockCreate };
+vi.mock("openai", () => ({
+  default: class OpenAI {
+    responses = { create: mockCreate };
   },
 }));
 
@@ -12,7 +12,7 @@ import { classifyComments } from "../lib/triage/classify";
 
 beforeEach(() => {
   mockCreate.mockReset();
-  process.env.ANTHROPIC_API_KEY = "test-key";
+  process.env.OPENAI_API_KEY = "test-key";
 });
 
 describe("classifyComments", () => {
@@ -24,7 +24,7 @@ describe("classifyComments", () => {
 
   it("maps each comment id to its parsed label, in order", async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: "text", text: '["GENUINE","LOW_EFFORT"]' }],
+      output_text: '{"labels":["GENUINE","LOW_EFFORT"]}',
     });
 
     const result = await classifyComments([
@@ -38,7 +38,7 @@ describe("classifyComments", () => {
 
   it("leaves comments unclassified if the model response isn't valid JSON", async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: "text", text: "sorry, I can't help with that" }],
+      output_text: "sorry, I can't help with that",
     });
 
     const result = await classifyComments([
@@ -48,11 +48,22 @@ describe("classifyComments", () => {
     expect(result.has("c1")).toBe(false);
   });
 
+  it("leaves comments unclassified if the batch call throws", async () => {
+    mockCreate.mockRejectedValue(new Error("network error"));
+
+    const result = await classifyComments([
+      { commentId: "c1", text: "hello", mediaCaption: null },
+    ]);
+
+    expect(result.has("c1")).toBe(false);
+    expect(result.size).toBe(0);
+  });
+
   it("batches more than 20 comments into multiple model calls", async () => {
-    mockCreate.mockImplementation(async ({ messages }: { messages: { content: string }[] }) => {
-      const count = (messages[0].content.match(/\d+\.\s\[post/g) ?? []).length;
+    mockCreate.mockImplementation(async ({ input }: { input: string }) => {
+      const count = (input.match(/\d+\.\s\[post/g) ?? []).length;
       const labels = Array.from({ length: count }, () => "GENUINE");
-      return { content: [{ type: "text", text: JSON.stringify(labels) }] };
+      return { output_text: JSON.stringify({ labels }) };
     });
 
     const comments = Array.from({ length: 25 }, (_, i) => ({
@@ -69,7 +80,7 @@ describe("classifyComments", () => {
 
   it("strips markdown code fences before parsing the response", async () => {
     mockCreate.mockResolvedValue({
-      content: [{ type: "text", text: '```json\n["GENUINE"]\n```' }],
+      output_text: '```json\n{"labels":["GENUINE"]}\n```',
     });
 
     const result = await classifyComments([

@@ -7,9 +7,9 @@
  * TriagedComment row), so a given commentId is classified at most once.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
-const MODEL = process.env.TRIAGE_CLASSIFY_MODEL ?? "claude-haiku-4-5-20251001";
+const MODEL = process.env.TRIAGE_CLASSIFY_MODEL ?? "gpt-5-nano";
 const BATCH_SIZE = 20;
 
 export type ClassificationLabel = "GENUINE" | "LOW_EFFORT" | "SPAM";
@@ -20,14 +20,26 @@ export interface CommentToClassify {
   mediaCaption: string | null;
 }
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
+const LABEL_SCHEMA = {
+  type: "object",
+  properties: {
+    labels: {
+      type: "array",
+      items: { type: "string", enum: ["GENUINE", "LOW_EFFORT", "SPAM"] },
+    },
+  },
+  required: ["labels"],
+  additionalProperties: false,
+} as const;
+
+let client: OpenAI | null = null;
+function getClient(): OpenAI {
   if (!client) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      throw new Error("ANTHROPIC_API_KEY environment variable is required");
+      throw new Error("OPENAI_API_KEY environment variable is required");
     }
-    client = new Anthropic({ apiKey });
+    client = new OpenAI({ apiKey });
   }
   return client;
 }
@@ -51,18 +63,20 @@ async function classifyBatch(
   batch: CommentToClassify[]
 ): Promise<Map<string, ClassificationLabel>> {
   try {
-    const response = await getClient().messages.create({
+    const response = await getClient().responses.create({
       model: MODEL,
-      max_tokens: 1024,
-      messages: [{ role: "user", content: buildPrompt(batch) }],
+      input: buildPrompt(batch),
+      text: {
+        format: {
+          type: "json_schema",
+          name: "comment_labels",
+          schema: LABEL_SCHEMA,
+          strict: true,
+        },
+      },
     });
 
-    const text = response.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
-
-    return parseBatchResponse(batch, text);
+    return parseBatchResponse(batch, response.output_text);
   } catch (error) {
     // Isolate this batch's failure so earlier batches' results survive.
     // Same philosophy as the malformed-JSON case: leave unclassified, next
@@ -85,8 +99,8 @@ function buildPrompt(batch: CommentToClassify[]): string {
     '(an emoji-only or generic one-word reaction like "nice" or "🔥"), or SPAM ' +
     "(a scam, bot, or completely unrelated to the post).\n\n" +
     lines.join("\n") +
-    '\n\nRespond with ONLY a JSON array of labels in the same order, e.g. ' +
-    '["GENUINE","LOW_EFFORT","SPAM"]. No other text.'
+    '\n\nRespond with a JSON object of the form {"labels": [...]} containing ' +
+    "the labels in the same order as the comments above."
   );
 }
 
@@ -102,14 +116,19 @@ function parseBatchResponse(
     .replace(/```\s*$/, "")
     .trim();
 
-  let labels: unknown;
+  let parsed: unknown;
   try {
-    labels = JSON.parse(cleaned);
+    parsed = JSON.parse(cleaned);
   } catch {
     // Malformed response: leave these unclassified rather than guess. The
     // next sweep will see them as not-yet-in-the-table and retry.
     return result;
   }
+
+  const labels =
+    parsed && typeof parsed === "object" && "labels" in parsed
+      ? (parsed as { labels: unknown }).labels
+      : undefined;
   if (!Array.isArray(labels)) return result;
 
   batch.forEach((comment, i) => {
