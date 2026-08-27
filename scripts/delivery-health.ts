@@ -18,6 +18,7 @@ import { getDMQueue } from "@/lib/queue/client";
 import { getRecentMediaComments } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
+import { isPerRecipientFailure } from "@/lib/queue/adaptive-throttle";
 
 type Level = "INFO" | "WARNING" | "ERROR";
 const found: { level: Level; message: string }[] = [];
@@ -81,19 +82,29 @@ async function main() {
   }
 
   // 3. People who asked and have nothing — the number that actually matters.
+  //
+  // Split by whether we can still do something about it. On 2026-08-27 this line read
+  // "32 people have never received anything" for hours while the queue was empty and
+  // healthy: every one of them was an unreachable account. A permanent floor reported
+  // as an open backlog is the same failure mode as an error string that names the wrong
+  // cause — it invites you to go looking for a problem that is not there.
   const failedRows = await prisma.dmLog.findMany({
     where: { status: "FAILED", createdAt: { gte: new Date(now - 7 * 24 * 60 * MIN) } },
-    select: { commenterId: true, attempts: true },
+    select: { commenterId: true, attempts: true, errorMessage: true },
   });
   const everSent = new Set(
     (await prisma.dmLog.findMany({ where: { status: "SENT" }, select: { commenterId: true } }))
       .map((r) => r.commenterId)
   );
-  const owed = failedRows.filter((r) => !everSent.has(r.commenterId));
+  const allOwed = failedRows.filter((r) => !everSent.has(r.commenterId));
+  const unreachable = allOwed.filter((r) => isPerRecipientFailure(r.errorMessage ?? ""));
+  const owed = allOwed.filter((r) => !isPerRecipientFailure(r.errorMessage ?? ""));
   const stuck = owed.filter((r) => (r.attempts ?? 0) >= 3);
   if (owed.length > 0) {
     flag(stuck.length > 0 ? "WARNING" : "INFO",
-      `${owed.length} people inside the 7-day window have never received anything (${stuck.length} exhausted their retries)`);
+      `${owed.length} people inside the 7-day window are still waiting (${stuck.length} exhausted their retries); ${unreachable.length} more are unreachable accounts, nothing to do`);
+  } else if (unreachable.length > 0) {
+    flag("INFO", `nobody is waiting; ${unreachable.length} unreachable accounts in the window (deleted, restricted, or blocking us)`);
   }
 
   // 4. A live campaign that matches nothing. This is the Arabic-matcher class: the

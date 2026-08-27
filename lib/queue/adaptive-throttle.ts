@@ -58,6 +58,16 @@ const PER_RECIPIENT_SIGNATURES = [
   "invalid for a private reply",
 ];
 
+/**
+ * True when the failure is about this one recipient and no retry will change it —
+ * their account is gone, restricted, or unreachable. Distinct from a transient
+ * failure: these people are not waiting in a queue, and counting them as owed
+ * forever makes a permanent floor look like an unresolved backlog.
+ */
+export function isPerRecipientFailure(message: string): boolean {
+  return PER_RECIPIENT_SIGNATURES.some((s) => message.includes(s));
+}
+
 export function isThrottleSignal(message: string): boolean {
   if (PER_RECIPIENT_SIGNATURES.some((s) => message.includes(s))) return false;
   return THROTTLE_SIGNATURES.some((s) => message.toLowerCase().includes(s.toLowerCase()));
