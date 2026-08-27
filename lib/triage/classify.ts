@@ -50,18 +50,29 @@ export async function classifyComments(
 async function classifyBatch(
   batch: CommentToClassify[]
 ): Promise<Map<string, ClassificationLabel>> {
-  const response = await getClient().messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    messages: [{ role: "user", content: buildPrompt(batch) }],
-  });
+  try {
+    const response = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      messages: [{ role: "user", content: buildPrompt(batch) }],
+    });
 
-  const text = response.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("");
+    const text = response.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
 
-  return parseBatchResponse(batch, text);
+    return parseBatchResponse(batch, text);
+  } catch (error) {
+    // Isolate this batch's failure so earlier batches' results survive.
+    // Same philosophy as the malformed-JSON case: leave unclassified, next
+    // sweep retries.
+    console.error(
+      "[Triage] Classification batch failed:",
+      error instanceof Error ? error.message : error
+    );
+    return new Map();
+  }
 }
 
 function buildPrompt(batch: CommentToClassify[]): string {
@@ -85,9 +96,15 @@ function parseBatchResponse(
 ): Map<string, ClassificationLabel> {
   const result = new Map<string, ClassificationLabel>();
 
+  const cleaned = responseText
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "")
+    .trim();
+
   let labels: unknown;
   try {
-    labels = JSON.parse(responseText.trim());
+    labels = JSON.parse(cleaned);
   } catch {
     // Malformed response: leave these unclassified rather than guess. The
     // next sweep will see them as not-yet-in-the-table and retry.

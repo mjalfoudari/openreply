@@ -66,4 +66,16 @@ describe("classifyComments", () => {
     expect(mockCreate).toHaveBeenCalledTimes(2);
     expect(result.size).toBe(25);
   });
+
+  it("strips markdown code fences before parsing the response", async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: "text", text: '```json\n["GENUINE"]\n```' }],
+    });
+
+    const result = await classifyComments([
+      { commentId: "c1", text: "hello", mediaCaption: null },
+    ]);
+
+    expect(result.get("c1")).toBe("GENUINE");
+  });
 });
