@@ -9,9 +9,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 
-// ponytail: no date-suffixed snapshot — use the current alias id so this
-// doesn't silently point at a retired model.
-const MODEL = process.env.TRIAGE_CLASSIFY_MODEL ?? "claude-haiku-4-5";
+const MODEL = process.env.TRIAGE_CLASSIFY_MODEL ?? "claude-haiku-4-5-20251001";
 const BATCH_SIZE = 20;
 
 export type ClassificationLabel = "GENUINE" | "LOW_EFFORT" | "SPAM";
