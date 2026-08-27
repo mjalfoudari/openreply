@@ -24,7 +24,10 @@ export function matchesAnyAutomation(
   text: string
 ): boolean {
   for (const automation of automations) {
-    const inScope = automation.postId === mediaId || automation.matchAnyPost;
+    // mirrors comment-reconciler.ts: postId set → matchAnyPost is ignored
+    const inScope = automation.postId
+      ? automation.postId === mediaId
+      : automation.matchAnyPost;
     if (!inScope) continue;
     if (automation.matchAnyWord) return true;
     if (matchKeywords(text, automation.keywords, automation.wholeWordMatch).matched) {

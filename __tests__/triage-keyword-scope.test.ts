@@ -49,4 +49,11 @@ describe("matchesAnyAutomation", () => {
   it("returns false for an empty automation list", () => {
     expect(matchesAnyAutomation([], "media_1", "برومبت")).toBe(false);
   });
+
+  it("postId takes priority over matchAnyPost when both are set (matches reconciler's if/else)", () => {
+    const automations = [
+      { ...baseAutomation, postId: "media_1", matchAnyPost: true, keywords: ["مهتم"] },
+    ];
+    expect(matchesAnyAutomation(automations, "media_2", "مهتم")).toBe(false);
+  });
 });
