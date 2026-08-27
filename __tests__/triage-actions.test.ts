@@ -107,6 +107,30 @@ describe("replyToTriagedComment", () => {
     expect(result).toEqual({ success: false, error: "Meta 4: rate limited" });
     expect(mockPrisma.triagedComment.update).not.toHaveBeenCalled();
   });
+
+  it("catches a Prisma error from findFirst and returns it as a result instead of throwing", async () => {
+    mockPrisma.triagedComment.findFirst.mockRejectedValue(new Error("connection refused"));
+
+    const result = await replyToTriagedComment("ws_1", "tc_1", "Thanks!");
+
+    expect(result).toEqual({ success: false, error: "connection refused" });
+    expect(mockPrisma.triagedComment.update).not.toHaveBeenCalled();
+  });
+
+  it("catches a Prisma error from update and returns it as a result instead of throwing", async () => {
+    mockPrisma.triagedComment.findFirst.mockResolvedValue({
+      id: "tc_1",
+      commentId: "c1",
+      instagramAccount: { accessToken: "encrypted" },
+    });
+    mockDecryptToken.mockReturnValue("decrypted-token");
+    mockSendCommentReply.mockResolvedValue({ id: "reply_1" });
+    mockPrisma.triagedComment.update.mockRejectedValue(new Error("connection refused"));
+
+    const result = await replyToTriagedComment("ws_1", "tc_1", "Thanks!");
+
+    expect(result).toEqual({ success: false, error: "connection refused" });
+  });
 });
 
 describe("dismissTriagedComment", () => {

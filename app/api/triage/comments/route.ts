@@ -30,29 +30,37 @@ export async function GET(request: NextRequest) {
 
   const view = request.nextUrl.searchParams.get("view") === "filtered" ? "filtered" : "pending";
 
-  const rows = await prisma.triagedComment.findMany({
-    where:
-      view === "filtered"
-        ? { workspaceId, status: "PENDING", classification: { not: "GENUINE" } }
-        : { workspaceId, status: "PENDING", classification: "GENUINE" },
-    orderBy: { createdAt: "asc" },
-    take: 200,
-  });
+  try {
+    const rows = await prisma.triagedComment.findMany({
+      where:
+        view === "filtered"
+          ? { workspaceId, status: "PENDING", classification: { not: "GENUINE" } }
+          : { workspaceId, status: "PENDING", classification: "GENUINE" },
+      orderBy: { createdAt: "asc" },
+      take: 200,
+    });
 
-  const comments: TriagedCommentListItem[] = rows.map((r) => ({
-    id: r.id,
-    mediaId: r.mediaId,
-    mediaThumbnailUrl: r.mediaThumbnailUrl,
-    mediaCaption: r.mediaCaption,
-    authorUsername: r.authorUsername,
-    text: r.text,
-    createdAt: r.createdAt.toISOString(),
-    classification: r.classification,
-  }));
+    const comments: TriagedCommentListItem[] = rows.map((r) => ({
+      id: r.id,
+      mediaId: r.mediaId,
+      mediaThumbnailUrl: r.mediaThumbnailUrl,
+      mediaCaption: r.mediaCaption,
+      authorUsername: r.authorUsername,
+      text: r.text,
+      createdAt: r.createdAt.toISOString(),
+      classification: r.classification,
+    }));
 
-  const body: { success: true; data: TriagedCommentListResponse } = {
-    success: true,
-    data: { comments },
-  };
-  return NextResponse.json(body);
+    const body: { success: true; data: TriagedCommentListResponse } = {
+      success: true,
+      data: { comments },
+    };
+    return NextResponse.json(body);
+  } catch (err) {
+    console.error("[Triaged Comments] Error:", err);
+    return NextResponse.json(
+      { success: false, error: "Failed to load comments" },
+      { status: 500 }
+    );
+  }
 }

@@ -20,44 +20,54 @@ export async function replyToTriagedComment(
   triagedCommentId: string,
   message: string
 ): Promise<TriageActionResult> {
-  const comment = await prisma.triagedComment.findFirst({
-    where: { id: triagedCommentId, workspaceId },
-    include: { instagramAccount: true },
-  });
-  if (!comment) return { success: false, error: "Comment not found" };
-  if (!comment.instagramAccount) {
-    return { success: false, error: "No Instagram account on this comment" };
-  }
-
-  const accessToken = decryptToken(comment.instagramAccount.accessToken);
   try {
-    await sendCommentReply(accessToken, comment.commentId, message);
+    const comment = await prisma.triagedComment.findFirst({
+      where: { id: triagedCommentId, workspaceId },
+      include: { instagramAccount: true },
+    });
+    if (!comment) return { success: false, error: "Comment not found" };
+    if (!comment.instagramAccount) {
+      return { success: false, error: "No Instagram account on this comment" };
+    }
+
+    const accessToken = decryptToken(comment.instagramAccount.accessToken);
+    try {
+      await sendCommentReply(accessToken, comment.commentId, message);
+    } catch (error) {
+      return { success: false, error: formatMetaError(error) };
+    }
+
+    await prisma.triagedComment.update({
+      where: { id: triagedCommentId },
+      data: { status: "HANDLED", repliedText: message, handledAt: new Date() },
+    });
+
+    return { success: true };
   } catch (error) {
+    console.error("[replyToTriagedComment] Error:", error);
     return { success: false, error: formatMetaError(error) };
   }
-
-  await prisma.triagedComment.update({
-    where: { id: triagedCommentId },
-    data: { status: "HANDLED", repliedText: message, handledAt: new Date() },
-  });
-
-  return { success: true };
 }
 
 export async function dismissTriagedComment(
   workspaceId: string,
   triagedCommentId: string
 ): Promise<TriageActionResult> {
-  const comment = await prisma.triagedComment.findFirst({
-    where: { id: triagedCommentId, workspaceId },
-    select: { id: true },
-  });
-  if (!comment) return { success: false, error: "Comment not found" };
+  try {
+    const comment = await prisma.triagedComment.findFirst({
+      where: { id: triagedCommentId, workspaceId },
+      select: { id: true },
+    });
+    if (!comment) return { success: false, error: "Comment not found" };
 
-  await prisma.triagedComment.update({
-    where: { id: triagedCommentId },
-    data: { status: "DISMISSED", handledAt: new Date() },
-  });
+    await prisma.triagedComment.update({
+      where: { id: triagedCommentId },
+      data: { status: "DISMISSED", handledAt: new Date() },
+    });
 
-  return { success: true };
+    return { success: true };
+  } catch (error) {
+    console.error("[dismissTriagedComment] Error:", error);
+    return { success: false, error: formatMetaError(error) };
+  }
 }
