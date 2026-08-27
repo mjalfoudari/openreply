@@ -13,7 +13,12 @@ vi.mock("@/lib/meta/client", () => ({
   sendCommentReply: mockSendCommentReply,
   MetaApiError: class MetaApiError extends Error {
     code: number;
-    constructor(code: number, message: string) {
+    constructor(
+      code: number,
+      _subcode: number | undefined,
+      _fbTraceId: string | undefined,
+      message: string
+    ) {
       super(message);
       this.code = code;
       this.name = "MetaApiError";
@@ -23,6 +28,7 @@ vi.mock("@/lib/meta/client", () => ({
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: mockDecryptToken }));
 
 import { replyToTriagedComment, dismissTriagedComment } from "../lib/triage/actions";
+import { MetaApiError } from "@/lib/meta/client";
 
 beforeEach(() => {
   mockPrisma.triagedComment.findFirst.mockReset();
@@ -84,6 +90,21 @@ describe("replyToTriagedComment", () => {
     const result = await replyToTriagedComment("ws_1", "tc_1", "Thanks!");
 
     expect(result).toEqual({ success: false, error: "rate limited" });
+    expect(mockPrisma.triagedComment.update).not.toHaveBeenCalled();
+  });
+
+  it("formats a MetaApiError with its code, distinct from a generic error", async () => {
+    mockPrisma.triagedComment.findFirst.mockResolvedValue({
+      id: "tc_1",
+      commentId: "c1",
+      instagramAccount: { accessToken: "encrypted" },
+    });
+    mockDecryptToken.mockReturnValue("decrypted-token");
+    mockSendCommentReply.mockRejectedValue(new MetaApiError(4, undefined, undefined, "rate limited"));
+
+    const result = await replyToTriagedComment("ws_1", "tc_1", "Thanks!");
+
+    expect(result).toEqual({ success: false, error: "Meta 4: rate limited" });
     expect(mockPrisma.triagedComment.update).not.toHaveBeenCalled();
   });
 });
