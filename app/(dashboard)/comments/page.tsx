@@ -4,13 +4,13 @@
  * Comments — triage queue for genuine audience comments.
  *
  * Unlike Instagram's own activity feed, this list never reorders or resets
- * scroll: polling only prepends newly-ingested rows, and replying/dismissing
+ * scroll: polling only appends newly-ingested rows, and replying/dismissing
  * removes exactly the one row acted on. Filtered-out comments (CTA keyword
  * hits, LLM-flagged low-effort/spam) are not shown here by default — see the
  * "Filtered" toggle.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TriagedCommentListItem } from "@/app/api/triage/comments/route";
 
 const POLL_MS = 30_000;
@@ -33,6 +33,7 @@ export default function CommentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  const actionedIds = useRef(new Set<string>());
 
   const load = useCallback(
     async (silent: boolean) => {
@@ -47,7 +48,7 @@ export default function CommentsPage() {
             setComments((prev) => {
               const seen = new Set(prev.map((c) => c.id));
               const fresh = data.data.comments.filter(
-                (c: TriagedCommentListItem) => !seen.has(c.id)
+                (c: TriagedCommentListItem) => !seen.has(c.id) && !actionedIds.current.has(c.id)
               );
               return fresh.length ? [...prev, ...fresh] : prev;
             });
@@ -86,6 +87,7 @@ export default function CommentsPage() {
       });
       const data = await res.json();
       if (data.success) {
+        actionedIds.current.add(id);
         setComments((prev) => prev.filter((c) => c.id !== id));
         setDrafts((prev) => {
           const next = { ...prev };
@@ -109,6 +111,7 @@ export default function CommentsPage() {
       const res = await fetch(`/api/triage/comments/${id}/dismiss`, { method: "POST" });
       const data = await res.json();
       if (data.success) {
+        actionedIds.current.add(id);
         setComments((prev) => prev.filter((c) => c.id !== id));
       } else {
         setError(data.error ?? "Failed to dismiss");
