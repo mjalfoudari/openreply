@@ -26,14 +26,40 @@ function formatTime(iso: string): string {
   });
 }
 
+function loadHideSelf(): boolean {
+  try {
+    return localStorage.getItem("triage-hide-self") === "true";
+  } catch {
+    return false;
+  }
+}
+
 export default function CommentsPage() {
   const [view, setView] = useState<"pending" | "filtered">("pending");
   const [comments, setComments] = useState<TriagedCommentListItem[]>([]);
+  const [selfUsernames, setSelfUsernames] = useState<string[]>([]);
+  const [hideSelf, setHideSelf] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const actionedIds = useRef(new Set<string>());
+
+  useEffect(() => {
+    setHideSelf(loadHideSelf());
+  }, []);
+
+  function toggleHideSelf() {
+    setHideSelf((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("triage-hide-self", String(next));
+      } catch {
+        // ignore — per-viewer convenience only
+      }
+      return next;
+    });
+  }
 
   const load = useCallback(
     async (silent: boolean) => {
@@ -42,6 +68,7 @@ export default function CommentsPage() {
         const res = await fetch(`/api/triage/comments?view=${view}`, { cache: "no-store" });
         const data = await res.json();
         if (data.success) {
+          setSelfUsernames(data.data.selfUsernames ?? []);
           if (silent) {
             // Merge-only: append genuinely new rows, never reorder/replace
             // rows already on screen (that's the whole point of this page).
@@ -67,6 +94,10 @@ export default function CommentsPage() {
     },
     [view]
   );
+
+  const visibleComments = hideSelf
+    ? comments.filter((c) => !c.authorUsername || !selfUsernames.includes(c.authorUsername))
+    : comments;
 
   useEffect(() => {
     setComments([]);
@@ -127,25 +158,31 @@ export default function CommentsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-lg font-semibold text-foreground">Comments</h1>
-        <div className="flex gap-2 text-sm">
-          <button
-            type="button"
-            onClick={() => setView("pending")}
-            className={`rounded px-3 py-1.5 ${
-              view === "pending" ? "bg-accent text-white" : "border border-border text-muted"
-            }`}
-          >
-            To reply
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("filtered")}
-            className={`rounded px-3 py-1.5 ${
-              view === "filtered" ? "bg-accent text-white" : "border border-border text-muted"
-            }`}
-          >
-            Filtered
-          </button>
+        <div className="flex items-center gap-4 text-sm">
+          <label className="flex items-center gap-1.5 text-muted">
+            <input type="checkbox" checked={hideSelf} onChange={toggleHideSelf} />
+            Hide my own comments
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setView("pending")}
+              className={`rounded px-3 py-1.5 ${
+                view === "pending" ? "bg-accent text-white" : "border border-border text-muted"
+              }`}
+            >
+              To reply
+            </button>
+            <button
+              type="button"
+              onClick={() => setView("filtered")}
+              className={`rounded px-3 py-1.5 ${
+                view === "filtered" ? "bg-accent text-white" : "border border-border text-muted"
+              }`}
+            >
+              Filtered
+            </button>
+          </div>
         </div>
       </div>
 
@@ -153,13 +190,13 @@ export default function CommentsPage() {
 
       {loading ? (
         <p className="text-sm text-muted">Loading…</p>
-      ) : comments.length === 0 ? (
+      ) : visibleComments.length === 0 ? (
         <p className="text-sm text-muted">
           {view === "pending" ? "No comments waiting on you." : "Nothing filtered."}
         </p>
       ) : (
         <div className="space-y-3">
-          {comments.map((c) => (
+          {visibleComments.map((c) => (
             <div key={c.id} className="rounded border border-border p-4">
               <div className="flex items-start gap-3">
                 {c.mediaThumbnailUrl && (

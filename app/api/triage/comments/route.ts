@@ -17,6 +17,7 @@ export interface TriagedCommentListItem {
 
 export interface TriagedCommentListResponse {
   comments: TriagedCommentListItem[];
+  selfUsernames: string[];
 }
 
 // Pending comments for the workspace. `view=filtered` returns the read-only
@@ -31,14 +32,20 @@ export async function GET(request: NextRequest) {
   const view = request.nextUrl.searchParams.get("view") === "filtered" ? "filtered" : "pending";
 
   try {
-    const rows = await prisma.triagedComment.findMany({
-      where:
-        view === "filtered"
-          ? { workspaceId, status: "PENDING", classification: { not: "GENUINE" } }
-          : { workspaceId, status: "PENDING", classification: "GENUINE" },
-      orderBy: { createdAt: "asc" },
-      take: 200,
-    });
+    const [rows, accounts] = await Promise.all([
+      prisma.triagedComment.findMany({
+        where:
+          view === "filtered"
+            ? { workspaceId, status: "PENDING", classification: { not: "GENUINE" } }
+            : { workspaceId, status: "PENDING", classification: "GENUINE" },
+        orderBy: { createdAt: "asc" },
+        take: 200,
+      }),
+      prisma.instagramAccount.findMany({
+        where: { workspaceId },
+        select: { username: true },
+      }),
+    ]);
 
     const comments: TriagedCommentListItem[] = rows.map((r) => ({
       id: r.id,
@@ -53,7 +60,7 @@ export async function GET(request: NextRequest) {
 
     const body: { success: true; data: TriagedCommentListResponse } = {
       success: true,
-      data: { comments },
+      data: { comments, selfUsernames: accounts.map((a) => a.username) },
     };
     return NextResponse.json(body);
   } catch (err) {
