@@ -72,10 +72,14 @@ async function sweepAccount(account: TriageAccount, sinceMs: number): Promise<vo
   const accessToken = decryptToken(account.accessToken);
 
   const media = await getUserMedia(accessToken, RECENT_MEDIA_LIMIT);
-  const recentMedia = media.filter((m) => Date.parse(m.timestamp) >= sinceMs);
 
-  for (const post of recentMedia) {
-    await sweepMedia(account, accessToken, post, sinceMs);
+  for (const post of media) {
+    await sweepMedia(account, accessToken, post, sinceMs).catch((error) => {
+      console.error(
+        `[Triage] Sweep failed for media ${post.id} (account ${account.instagramId}):`,
+        error instanceof Error ? error.message : error
+      );
+    });
   }
 }
 
