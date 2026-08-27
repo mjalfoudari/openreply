@@ -46,3 +46,4 @@ next-env.d.ts
 
 # launchd worker logs
 /ops/*.log
+.worktrees/
