@@ -4,10 +4,16 @@
  */
 
 import { prisma } from "@/lib/db/client";
-import { sendCommentReply } from "@/lib/meta/client";
+import { sendCommentReply, MetaApiError } from "@/lib/meta/client";
 import { decryptToken } from "@/lib/meta/oauth";
 
 export type TriageActionResult = { success: true } | { success: false; error: string };
+
+function formatMetaError(error: unknown): string {
+  if (error instanceof MetaApiError) return `Meta ${error.code}: ${error.message}`;
+  if (error instanceof Error) return error.message;
+  return "Unknown error";
+}
 
 export async function replyToTriagedComment(
   workspaceId: string,
@@ -24,7 +30,11 @@ export async function replyToTriagedComment(
   }
 
   const accessToken = decryptToken(comment.instagramAccount.accessToken);
-  await sendCommentReply(accessToken, comment.commentId, message);
+  try {
+    await sendCommentReply(accessToken, comment.commentId, message);
+  } catch (error) {
+    return { success: false, error: formatMetaError(error) };
+  }
 
   await prisma.triagedComment.update({
     where: { id: triagedCommentId },

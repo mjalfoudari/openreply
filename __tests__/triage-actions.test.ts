@@ -9,7 +9,17 @@ const { mockPrisma, mockSendCommentReply, mockDecryptToken } = vi.hoisted(() => 
 }));
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
-vi.mock("@/lib/meta/client", () => ({ sendCommentReply: mockSendCommentReply }));
+vi.mock("@/lib/meta/client", () => ({
+  sendCommentReply: mockSendCommentReply,
+  MetaApiError: class MetaApiError extends Error {
+    code: number;
+    constructor(code: number, message: string) {
+      super(message);
+      this.code = code;
+      this.name = "MetaApiError";
+    }
+  },
+}));
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: mockDecryptToken }));
 
 import { replyToTriagedComment, dismissTriagedComment } from "../lib/triage/actions";
@@ -60,6 +70,21 @@ describe("replyToTriagedComment", () => {
     const result = await replyToTriagedComment("ws_1", "tc_1", "Thanks!");
 
     expect(result).toEqual({ success: false, error: "No Instagram account on this comment" });
+  });
+
+  it("catches a Meta API error from sendCommentReply and returns it as a result instead of throwing", async () => {
+    mockPrisma.triagedComment.findFirst.mockResolvedValue({
+      id: "tc_1",
+      commentId: "c1",
+      instagramAccount: { accessToken: "encrypted" },
+    });
+    mockDecryptToken.mockReturnValue("decrypted-token");
+    mockSendCommentReply.mockRejectedValue(new Error("rate limited"));
+
+    const result = await replyToTriagedComment("ws_1", "tc_1", "Thanks!");
+
+    expect(result).toEqual({ success: false, error: "rate limited" });
+    expect(mockPrisma.triagedComment.update).not.toHaveBeenCalled();
   });
 });
 
