@@ -32,7 +32,7 @@ const CAMPAIGN_IDS = [
   "cmt1emarj000604kwy9o2blx9",
 ] as const;
 
-const BUTTON = "افتح الخريطة";
+const BUTTON = "شوف خطوات تطبيقك 👇";
 const BRIDGE =
   "إذا تبي تشوف الطريق كامل من الفكرة لين الستور، افتح خريطة الطريق — ومنها تختار العضوية أو الاستشارة إذا احتجت 🔥 {link}";
 const FOLLOW_UP =

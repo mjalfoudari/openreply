@@ -38,6 +38,7 @@ import { recordWorkerAlert } from "@/lib/ops/worker-health";
 import {
   buildTrackedUrl,
   renderMessageWithTracking,
+  renderMessageWithVisibleTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
 
@@ -112,7 +113,7 @@ function buildInlineLinkFallback(
   bodyText: string
 ): string {
   const base =
-    renderMessageWithTracking({ message, commenterName, trackedLinks }) ||
+    renderMessageWithVisibleTracking({ message, commenterName, trackedLinks }) ||
     bodyText;
   const extraUrls = trackedLinks.slice(1).map((link) => buildTrackedUrl(link.slug));
   return extraUrls.length > 0 ? `${base}\n${extraUrls.join("\n")}` : base;
@@ -153,9 +154,10 @@ async function sendRevealDirectMessage(
 
   // Try button template first; if Meta rejects it, fall back to inline links.
   const bodyText =
-    renderMessageWithoutLink({
+    renderMessageWithVisibleTracking({
       message: automation.dmMessage,
       commenterName,
+      trackedLinks: automation.trackedLinks,
     }) || "Here's your link:";
   const buttons = buildLinkButtons(
     automation.trackedLinks,
@@ -612,9 +614,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       } else if (automation.trackedLinks.length > 0) {
         // Try button template first; if Meta rejects it, fall back to inline links.
         const bodyText =
-          renderMessageWithoutLink({
+          renderMessageWithVisibleTracking({
             message: automation.dmMessage,
             commenterName,
+            trackedLinks: automation.trackedLinks,
           }) || "Here's your link:";
         const buttons = buildLinkButtons(
           automation.trackedLinks,
@@ -1462,4 +1465,3 @@ export function createDMWorker(): Worker<DmQueueJob> {
 
   return worker;
 }
-

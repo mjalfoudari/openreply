@@ -77,4 +77,22 @@ describe("tracked link redirect route", () => {
     expect(response.headers.get("location")).toBe("https://manychat-alternative.com/");
     expect(mockPrisma.linkClick.create).not.toHaveBeenCalled();
   });
+
+  it("leaves platform assignment to Majlis after recording the tracked click", async () => {
+    mockPrisma.trackedLink.findUnique.mockResolvedValue({
+      id: "link_123", workspaceId: "workspace_123", automationId: "automation_123",
+      destinationUrl: "https://majlisalcode.com/dalil?utm_source=instagram&utm_campaign=free-tools",
+      automation: { instagramAccountId: "instagram_account_123" },
+    });
+    mockPrisma.linkClick.create.mockResolvedValue({});
+    const response = await GET(
+      new Request("https://manychat-alternative.com/r/abc123") as Parameters<typeof GET>[0],
+      { params: Promise.resolve({ slug: "abc123" }) }
+    );
+    expect(response.headers.get("location")).toBe(
+      "https://majlisalcode.com/dalil?utm_source=instagram&utm_campaign=free-tools",
+    );
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(mockPrisma.linkClick.create).toHaveBeenCalledOnce();
+  });
 });

@@ -593,7 +593,7 @@ describe("DM Worker — Full Pipeline", () => {
       "decrypted_token",
       "ig_456",
       "comment_555",
-      "Hey commenter_user! Here is the offer:",
+      "Hey commenter_user! Here is the offer:\n\n👇\nhttp://localhost:3000/r/abc123",
       [
         { title: "Get offer", url: "http://localhost:3000/r/abc123" },
         { title: "Book a call", url: "http://localhost:3000/r/def456" },
@@ -665,7 +665,7 @@ describe("DM Worker — Full Pipeline", () => {
       "decrypted_token",
       "ig_456",
       "comment_555",
-      "Hey commenter_user! Here is the offer:",
+      "Hey commenter_user! Here is the offer:\n\n👇\nhttp://localhost:3000/r/abc123",
       [{ title: "Get offer", url: "http://localhost:3000/r/abc123" }]
     );
   });
@@ -1106,6 +1106,7 @@ describe("DM Worker — DM keyword trigger", () => {
     mockPrisma.automation.findMany.mockResolvedValue([
       {
         ...dmTriggerAutomation,
+        dmMessage: "DM reply for {username} {link}",
         linkButtonLabel: "Get it",
         trackedLinks: [
           {
@@ -1120,7 +1121,13 @@ describe("DM Worker — DM keyword trigger", () => {
     const processor = getProcessor();
     await processor(createMockMessageJob());
 
-    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "DM reply for commenter_user\n\n👇\nhttp://localhost:3000/r/abc123",
+      [{ title: "Get it", url: "http://localhost:3000/r/abc123" }]
+    );
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
   });
 

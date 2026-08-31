@@ -54,6 +54,7 @@ export function renderMessageWithoutLink({
 export function buildTrackedUrl(slug: string, baseUrl?: string) {
   const resolvedBaseUrl =
     baseUrl ??
+    process.env.TRACKING_BASE_URL ??
     (typeof window !== "undefined"
       ? window.location.origin
       : process.env.NEXTAUTH_URL ?? "http://localhost:3000");
@@ -91,4 +92,22 @@ export function renderMessageWithTracking({
   }
 
   return rendered;
+}
+
+/** Keep the tracked URL visible in button-template text. Instagram owns the
+ * button styling, so the plain-text URL is the reliable second affordance. */
+export function renderMessageWithVisibleTracking(
+  options: Parameters<typeof renderMessageWithTracking>[0]
+) {
+  const rendered = renderMessageWithTracking(options);
+  const primaryLink = options.trackedLinks?.[0];
+  if (!primaryLink) return rendered;
+
+  const trackedUrl = buildTrackedUrl(primaryLink.slug, options.baseUrl);
+  if (rendered.includes(`\n${trackedUrl}`)) return rendered;
+
+  const linkAt = rendered.indexOf(trackedUrl);
+  const before = (linkAt >= 0 ? rendered.slice(0, linkAt) : rendered).trimEnd();
+  const after = linkAt >= 0 ? rendered.slice(linkAt + trackedUrl.length).trimStart() : "";
+  return [before, `👇\n${trackedUrl}`, after].filter(Boolean).join("\n\n");
 }

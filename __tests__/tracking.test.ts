@@ -8,10 +8,18 @@ import {
   buildTrackedUrl,
   extractFirstUrl,
   renderMessageWithTracking,
+  renderMessageWithVisibleTracking,
   replaceUrlWithTrackedPlaceholder,
 } from "../lib/tracking/message";
 
 describe("tracked link messages", () => {
+  it("uses the branded tracking origin from the environment", () => {
+    const previous = process.env.TRACKING_BASE_URL;
+    process.env.TRACKING_BASE_URL = "https://majlisalcode.com";
+    expect(buildTrackedUrl("abc123")).toBe("https://majlisalcode.com/r/abc123");
+    process.env.TRACKING_BASE_URL = previous;
+  });
+
   it("extracts a destination URL and replaces it with the tracked placeholder", () => {
     const message =
       "Hey {username}, here is your guide: https://example.com/guide.";
@@ -37,6 +45,20 @@ describe("tracked link messages", () => {
         baseUrl: "https://manychat-alternative.com",
       })
     ).toBe("Hey Maya, grab it here: https://manychat-alternative.com/r/abc123");
+  });
+
+  it("puts the tracked URL on its own visible line without moving authored follow copy", () => {
+    expect(
+      renderMessageWithVisibleTracking({
+        message: "The promised value 🔥 {link}\n\nFollow after delivery",
+        trackedLinks: [
+          { slug: "abc123", destinationUrl: "https://example.com/guide" },
+        ],
+        baseUrl: "https://manychat-alternative.com",
+      })
+    ).toBe(
+      "The promised value 🔥\n\n👇\nhttps://manychat-alternative.com/r/abc123\n\nFollow after delivery"
+    );
   });
 
   it("can replace a raw destination URL when the placeholder is missing", () => {
