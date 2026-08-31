@@ -116,7 +116,14 @@ async function handleResponse<T>(response: Response): Promise<T> {
     const code = err?.code ?? response.status;
     const subcode = err?.error_subcode;
     const traceId = err?.fbtrace_id;
-    const message = err?.message ?? "Unknown Meta API error";
+    // Without the path a Meta error is unattributable: a connect runs several
+    // calls in a row that fail with the identical message. The query string is
+    // dropped on purpose — it carries the access token.
+    let path = "";
+    try {
+      path = ` (${new URL(response.url).pathname})`;
+    } catch {}
+    const message = `${err?.message ?? "Unknown Meta API error"}${path} [code=${code} sub=${subcode ?? "-"} type=${err?.type ?? "-"} trace=${traceId ?? "-"}]`;
 
     switch (code) {
       case 190:

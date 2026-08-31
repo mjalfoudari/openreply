@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { DemoNotice } from "@/components/demo-notice";
 
 export const metadata: Metadata = {
   title: "OpenReply - Open source Instagram comment-to-DM automation",
@@ -9,6 +10,8 @@ export const metadata: Metadata = {
 };
 
 const GITHUB_URL = "https://github.com/diwenne/openreply";
+const SETUP_DOCS_URL =
+  "https://github.com/diwenne/openreply/blob/main/docs/setup.md";
 
 function formatStars(count: number): string {
   if (count >= 1000) {
@@ -285,6 +288,8 @@ export default async function Home() {
   const stars = await getGitHubStars();
   return (
     <main className="min-h-screen bg-white text-zinc-900">
+      <DemoNotice variant="banner" />
+
       <header className="sticky top-0 z-40 border-b border-zinc-200 bg-white">
         <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-5 sm:px-6 lg:px-8">
           <Link href="/" className="flex items-center gap-3" aria-label="OpenReply home">
@@ -443,6 +448,22 @@ export default async function Home() {
             </h2>
             <p className="mt-4 text-base text-zinc-600">
               Free and open source. Star it if it saves you a subscription.
+            </p>
+            <p className="mt-3 text-sm leading-6 text-zinc-600">
+              <span className="font-bold text-zinc-900">
+                On your own deployment, not this one.
+              </span>{" "}
+              Clone the repo and follow the{" "}
+              <a
+                href={SETUP_DOCS_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="font-bold text-orange-700 underline underline-offset-2 transition hover:text-orange-800"
+              >
+                setup guide
+              </a>{" "}
+              — a Meta app and a domain of your own are required before anything
+              sends.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">

@@ -46,7 +46,8 @@ export default function CommentsPage() {
   const actionedIds = useRef(new Set<string>());
 
   useEffect(() => {
-    setHideSelf(loadHideSelf());
+    const frame = requestAnimationFrame(() => setHideSelf(loadHideSelf()));
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   function toggleHideSelf() {
@@ -62,7 +63,8 @@ export default function CommentsPage() {
   }
 
   const load = useCallback(
-    async (silent: boolean) => {
+    async (silent: boolean, reset = false) => {
+      if (reset) setComments([]);
       if (!silent) setLoading(true);
       try {
         const res = await fetch(`/api/triage/comments?view=${view}`, { cache: "no-store" });
@@ -100,10 +102,12 @@ export default function CommentsPage() {
     : comments;
 
   useEffect(() => {
-    setComments([]);
-    void load(false);
+    const frame = requestAnimationFrame(() => void load(false, true));
     const timer = window.setInterval(() => void load(true), POLL_MS);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearInterval(timer);
+    };
   }, [load]);
 
   async function handleReply(id: string) {
