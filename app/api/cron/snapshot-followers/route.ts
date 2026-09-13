@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { decryptToken } from "@/lib/meta/oauth";
-import { getUserInfo } from "@/lib/meta/client";
+import { createInstagramContext } from "@/lib/instagram/provider";
+import { getUserInfo } from "@/lib/instagram/provider";
 import {
   backfillFollowerHistory,
   recordFollowerSnapshot,
@@ -26,13 +26,20 @@ export async function GET(request: NextRequest) {
   }
 
   const accounts = await prisma.instagramAccount.findMany({
-    where: { accessToken: { not: "" } },
+    where: {
+      OR: [
+        { provider: "META", accessToken: { not: "" } },
+        { provider: "ZERNIO", zernioAccountId: { not: null } },
+      ],
+    },
     select: {
       id: true,
       workspaceId: true,
       username: true,
       instagramId: true,
       accessToken: true,
+      provider: true,
+      zernioAccountId: true,
     },
   });
 
@@ -42,8 +49,24 @@ export async function GET(request: NextRequest) {
 
   for (const account of accounts) {
     try {
-      const token = decryptToken(account.accessToken);
-      const info = await getUserInfo(token);
+      const token = await createInstagramContext(account);
+      if (token.provider === "ZERNIO") {
+        const imported = await backfillFollowerHistory({
+          instagramAccountId: account.id,
+          accessToken: token,
+          instagramId: account.instagramId,
+          currentFollowers: 0,
+        });
+        backfilled += imported;
+        if (imported === 0)
+          failures.push({
+            username: account.username,
+            reason:
+              "Zernio follower history is unavailable or already stored (Analytics add-on required)",
+          });
+        continue;
+      }
+      const info = await getUserInfo({ context: token });
 
       if (typeof info.followers_count !== "number") {
         failures.push({
@@ -61,12 +84,12 @@ export async function GET(request: NextRequest) {
         where: { instagramAccountId: account.id },
       });
       if (existing <= 1) {
-        backfilled += await backfillFollowerHistory(
-          account.id,
-          token,
-          account.instagramId,
-          info.followers_count
-        );
+        backfilled += await backfillFollowerHistory({
+          instagramAccountId: account.id,
+          accessToken: token,
+          instagramId: account.instagramId,
+          currentFollowers: info.followers_count,
+        });
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : "Unknown error";

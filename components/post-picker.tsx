@@ -43,6 +43,7 @@ export default function PostPicker({
   usedPostIds,
   onSelect,
 }: PostPickerProps) {
+  const [limitations, setLimitations] = useState<string[]>([]);
   const [posts, setPosts] = useState<InstagramPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +82,7 @@ export default function PostPicker({
         if (cancelled) return;
         if (data.success) {
           setPosts(data.data);
+          setLimitations(data.limitations ?? []);
           writeCache(cacheKey, data.data);
         } else if (!cached.data) {
           setError(data.error ?? "Failed to load posts");
@@ -136,6 +138,7 @@ export default function PostPicker({
 
   return (
     <div className="space-y-2">
+      {limitations.map(note => <p key={note} className="text-xs text-muted">{note}</p>)}
       <div className="flex items-center justify-between gap-2">
         <input
           value={query}

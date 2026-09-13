@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import type { AccountOption } from "@/components/account-select";
+import { ZernioConnection } from "@/components/zernio-connection";
 import { InstagramConnectNotice } from "@/components/instagram-connect-notice";
 
 interface SettingsData {
@@ -18,6 +19,7 @@ interface SettingsData {
   } | null;
   instagramAccounts: Array<
     AccountOption & {
+      provider?: "META" | "ZERNIO";
       tokenExpiresAt: string | null;
       webhookSubscribed: boolean;
     }
@@ -136,6 +138,8 @@ export default function SettingsPage() {
         <InstagramConnectNotice />
       </Suspense>
 
+      <ZernioConnection canManage={canManageMembers} />
+
       <section className="panel rounded p-4 sm:p-6">
         <h2 className="text-base font-semibold mb-6">Instagram Connection</h2>
 
@@ -187,10 +191,10 @@ export default function SettingsPage() {
                     @{account.username}
                   </p>
                   <p className="mt-1 text-xs text-muted">
-                    Token expires{" "}
+                    {account.provider === "ZERNIO" ? "Connected via Zernio" : <>Token expires{" "}
                     {account.tokenExpiresAt
                       ? new Date(account.tokenExpiresAt).toLocaleDateString()
-                      : "not available"}{" "}
+                      : "not available"}</>}{" "}
                     · {account.webhookSubscribed ? "Webhook ready" : "Webhook pending"}
                   </p>
                 </div>
@@ -213,7 +217,7 @@ export default function SettingsPage() {
             href="/api/instagram/connect"
             className="px-4 py-2 rounded text-sm font-medium transition-colors bg-accent text-white hover:bg-accent-hover"
           >
-            {accounts.length > 0 ? "Connect another account" : "Connect Instagram"}
+            Connect using your own Meta app
           </a>
         </div>
       </section>

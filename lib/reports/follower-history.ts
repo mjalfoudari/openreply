@@ -2,8 +2,10 @@ import { prisma } from "@/lib/db/client";
 import {
   getFollowerCountSeries,
   getUserInfo,
+  getZernioFollowerSnapshots,
   type FollowerCountPoint,
-} from "@/lib/meta/client";
+  type InstagramContext,
+} from "@/lib/instagram/provider";
 
 export interface FollowerHistoryPoint {
   /** ISO date (YYYY-MM-DD). */
@@ -87,25 +89,36 @@ export function reconstructFollowerTotals(
  * Returns the number of days written. Zero means the insight metric was
  * unavailable, which is expected for small or unsupported accounts.
  */
-export async function backfillFollowerHistory(
-  instagramAccountId: string,
-  accessToken: string,
-  instagramId: string,
-  currentFollowers: number
-): Promise<number> {
-  let series: FollowerCountPoint[] | null;
+export async function backfillFollowerHistory({
+  instagramAccountId,
+  accessToken,
+  instagramId,
+  currentFollowers,
+}: {
+  instagramAccountId: string;
+  accessToken: InstagramContext;
+  instagramId: string;
+  currentFollowers: number;
+}): Promise<number> {
+  let points: { date: string; followers: number }[];
   try {
-    series = await getFollowerCountSeries(accessToken, instagramId);
+    if (accessToken.provider === "ZERNIO") {
+      points = await getZernioFollowerSnapshots(accessToken);
+    } else {
+      const series = await getFollowerCountSeries({
+        context: accessToken,
+        igUserId: instagramId,
+      });
+      if (!series?.length) return 0;
+      points = reconstructFollowerTotals(series, currentFollowers);
+    }
   } catch {
-    // PermissionError and friends — nothing to backfill from.
     return 0;
   }
-
-  if (!series?.length) return 0;
-
-  const totals = reconstructFollowerTotals(series, currentFollowers).map(
-    (t) => ({ date: toUtcDay(t.date), followers: t.followers })
-  );
+  const totals = points.map((t) => ({
+    date: toUtcDay(t.date),
+    followers: t.followers,
+  }));
   if (!totals.length) return 0;
 
   const existing = await prisma.followerSnapshot.findMany({
@@ -172,9 +185,19 @@ export async function getFollowerHistory(
  */
 export async function ensureFollowerHistory(
   account: { id: string; instagramId: string },
-  accessToken: string
+  accessToken: InstagramContext
 ): Promise<number | null> {
-  const info = await getUserInfo(accessToken);
+  if (accessToken.provider === "ZERNIO") {
+    await backfillFollowerHistory({
+      instagramAccountId: account.id,
+      accessToken: accessToken,
+      instagramId: account.instagramId,
+      currentFollowers: 0,
+    });
+    const history = await getFollowerHistory(account.id);
+    return history.at(-1)?.followers ?? null;
+  }
+  const info = await getUserInfo({ context: accessToken });
   const followers = info.followers_count;
   if (typeof followers !== "number") return null;
 
@@ -184,12 +207,12 @@ export async function ensureFollowerHistory(
     where: { instagramAccountId: account.id },
   });
   if (count <= 1) {
-    await backfillFollowerHistory(
-      account.id,
-      accessToken,
-      account.instagramId,
-      followers
-    );
+    await backfillFollowerHistory({
+      instagramAccountId: account.id,
+      accessToken: accessToken,
+      instagramId: account.instagramId,
+      currentFollowers: followers,
+    });
   }
 
   return followers;

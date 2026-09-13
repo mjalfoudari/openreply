@@ -107,11 +107,12 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-8">
+      {data.limitations?.map(note => <p key={note} className="text-sm text-muted">{note}</p>)}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-lg font-semibold text-foreground">Overview</h1>
           <p className="text-sm text-muted mt-1">
-            {data.requestedCount === "all" ? "All-time" : "Recent"} —{" "}
+            {data.provider !== "ZERNIO" && data.requestedCount === "all" ? "All-time" : "Recent"} —{" "}
             {totals.posts} post{totals.posts === 1 ? "" : "s"} from @
             {data.account.username}
             {data.truncated ? ` (capped at ${totals.posts})` : ""}

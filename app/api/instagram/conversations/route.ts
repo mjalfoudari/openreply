@@ -5,8 +5,8 @@ import {
   getConversations,
   sendDirectMessage,
   MetaApiError,
-} from "@/lib/meta/client";
-import { decryptToken } from "@/lib/meta/oauth";
+} from "@/lib/instagram/provider";
+import { createInstagramContext } from "@/lib/instagram/provider";
 
 export interface ConversationListItem {
   id: string;
@@ -46,8 +46,11 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const accessToken = decryptToken(account.accessToken);
-    const raw = await getConversations(accessToken, account.instagramId);
+    const accessToken = await createInstagramContext(account);
+    const raw = await getConversations({
+      context: accessToken,
+      igUserId: account.instagramId,
+    });
 
     const conversations: ConversationListItem[] = raw.map((c) => {
       const participants = c.participants?.data ?? [];
@@ -89,7 +92,10 @@ export async function GET(request: NextRequest) {
       err instanceof MetaApiError
         ? err.message
         : "Failed to load conversations";
-    return NextResponse.json({ success: false, error: message }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 500 }
+    );
   }
 }
 
@@ -103,7 +109,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { instagramAccountId?: string; recipientId?: string; text?: string };
+  let body: {
+    instagramAccountId?: string;
+    recipientId?: string;
+    text?: string;
+  };
   try {
     body = await request.json();
   } catch {
@@ -133,13 +143,13 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const accessToken = decryptToken(account.accessToken);
-    const result = await sendDirectMessage(
-      accessToken,
-      account.instagramId,
-      body.recipientId,
-      text
-    );
+    const accessToken = await createInstagramContext(account);
+    const result = await sendDirectMessage({
+      context: accessToken,
+      instagramAccountId: account.instagramId,
+      userId: body.recipientId,
+      message: text,
+    });
     return NextResponse.json({ success: true, data: result });
   } catch (err) {
     console.error("[Conversations] Send error:", err);
@@ -147,6 +157,9 @@ export async function POST(request: NextRequest) {
     // window having closed, which the user needs to see explicitly.
     const message =
       err instanceof MetaApiError ? err.message : "Failed to send message";
-    return NextResponse.json({ success: false, error: message }, { status: 502 });
+    return NextResponse.json(
+      { success: false, error: message },
+      { status: 502 }
+    );
   }
 }

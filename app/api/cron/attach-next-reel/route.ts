@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { getUserMedia, type InstagramMedia } from "@/lib/meta/client";
-import { decryptToken } from "@/lib/meta/oauth";
+import { getUserMedia, type InstagramMedia } from "@/lib/instagram/provider";
+import {
+  createInstagramContext,
+  hasInstagramCredentials,
+} from "@/lib/instagram/provider";
 
 /**
  * Binds "next reel" campaigns to a real post.
@@ -36,13 +39,20 @@ export async function GET(request: NextRequest) {
   // Group by connected account so we fetch each account's media only once.
   const byAccount = new Map<
     string,
-    { account: (typeof pending)[number]["instagramAccount"]; automations: typeof pending }
+    {
+      account: (typeof pending)[number]["instagramAccount"];
+      automations: typeof pending;
+    }
   >();
   for (const automation of pending) {
     const key = automation.instagramAccountId;
     const entry = byAccount.get(key);
     if (entry) entry.automations.push(automation);
-    else byAccount.set(key, { account: automation.instagramAccount, automations: [automation] });
+    else
+      byAccount.set(key, {
+        account: automation.instagramAccount,
+        automations: [automation],
+      });
   }
 
   let bound = 0;
@@ -51,12 +61,12 @@ export async function GET(request: NextRequest) {
 
   for (const { account, automations } of byAccount.values()) {
     checked += automations.length;
-    if (!account?.accessToken) continue;
+    if (!account || !hasInstagramCredentials(account)) continue;
 
     let reels: InstagramMedia[];
     try {
-      const token = decryptToken(account.accessToken);
-      const media = await getUserMedia(token, 25);
+      const token = await createInstagramContext(account);
+      const media = await getUserMedia({ context: token, limit: 25 });
       reels = media
         .filter(isReel)
         .sort(

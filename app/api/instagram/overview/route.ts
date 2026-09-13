@@ -7,8 +7,8 @@ import {
   getMediaInsights,
   PermissionError,
   type InstagramMedia,
-} from "@/lib/meta/client";
-import { decryptToken } from "@/lib/meta/oauth";
+} from "@/lib/instagram/provider";
+import { createInstagramContext } from "@/lib/instagram/provider";
 import {
   ensureFollowerHistory,
   getFollowerHistory,
@@ -41,9 +41,8 @@ async function mapWithConcurrency<T, R>(
     }
   }
 
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    () => worker()
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () =>
+    worker()
   );
   await Promise.all(workers);
   return results;
@@ -88,12 +87,12 @@ export interface OverviewResponse {
     interactions: number;
   };
   posts: OverviewPost[];
+  provider?: "META" | "ZERNIO";
+  limitations?: string[];
 }
 
 function isVideoLike(media: InstagramMedia): boolean {
-  return (
-    media.media_product_type === "REELS" || media.media_type === "VIDEO"
-  );
+  return media.media_product_type === "REELS" || media.media_type === "VIDEO";
 }
 
 export async function GET(request: NextRequest) {
@@ -122,7 +121,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const accessToken = decryptToken(account.accessToken);
+    const accessToken = await createInstagramContext(account);
 
     // `count` is either "all" or a positive integer (last N posts).
     const countParam = request.nextUrl.searchParams.get("count");
@@ -138,8 +137,10 @@ export async function GET(request: NextRequest) {
       ? MAX_POSTS
       : Math.min(requestedCount as number, MAX_POSTS);
 
-    const media = await getAllUserMedia(accessToken, target);
-    const truncated = media.length >= MAX_POSTS;
+    const media = await getAllUserMedia({ context: accessToken, max: target });
+    const truncated =
+      media.length >= MAX_POSTS ||
+      (account.provider === "ZERNIO" && media.length >= 25);
 
     // Likes and comments come free with basic media fields. Views / reach /
     // saved / shares require the insights permission, so fetch them per media
@@ -156,7 +157,11 @@ export async function GET(request: NextRequest) {
           ? ["views", "reach", "saved", "shares", "total_interactions"]
           : ["reach", "saved", "shares", "total_interactions"];
         try {
-          const data = await getMediaInsights(accessToken, m.id, metrics);
+          const data = await getMediaInsights({
+            context: accessToken,
+            mediaId: m.id,
+            metrics: metrics,
+          });
           insightsAvailable = true;
           return data;
         } catch (err) {
@@ -195,7 +200,8 @@ export async function GET(request: NextRequest) {
         acc.comments += p.comments;
         acc.saved += p.saved ?? 0;
         acc.shares += p.shares ?? 0;
-        acc.interactions += p.likes + p.comments + (p.saved ?? 0) + (p.shares ?? 0);
+        acc.interactions +=
+          p.likes + p.comments + (p.saved ?? 0) + (p.shares ?? 0);
         return acc;
       },
       {
@@ -238,6 +244,14 @@ export async function GET(request: NextRequest) {
       account: { id: account.id, username: account.username },
       accounts,
       requestedCount,
+      provider: account.provider,
+      limitations:
+        account.provider === "ZERNIO"
+          ? [
+              "Post reporting covers the 25 most recent Instagram posts.",
+              "Insights and follower history require the Zernio Analytics add-on and reflect its last sync. Missing metrics remain unavailable.",
+            ]
+          : [],
       truncated,
       insightsAvailable: insightsAvailable && !permissionDenied,
       followers,

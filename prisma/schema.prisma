@@ -75,6 +75,7 @@ model Workspace {
   usagePeriodStart  DateTime @default(now())
   dmsSentThisPeriod Int      @default(0)
 
+  zernioConnection  ZernioConnection?
   members           WorkspaceMember[]
   invitations       WorkspaceInvitation[]
   instagramAccounts InstagramAccount[]
@@ -131,6 +132,8 @@ model InstagramAccount {
   instagramId       String   @unique
   username          String
   name              String?
+  provider          InstagramProvider @default(META)
+  zernioAccountId   String?
   accessToken       String
   tokenExpiresAt    DateTime?
   webhookSubscribed Boolean  @default(false)
@@ -238,6 +241,8 @@ model DmLog {
   // The public comment reply is delivered independently of the DM, so its
   // outcome is tracked separately. publicReplySentAt makes it idempotent across
   // retries; a DM failure never blocks or re-posts the public reply.
+  dmDeliveryUnconfirmed Boolean @default(false)
+  publicReplyDeliveryUnconfirmed Boolean @default(false)
   publicReplySentAt DateTime?
   publicReplyError  String?
 
@@ -255,12 +260,9 @@ model DmLog {
   @@index([status])
 }
 
-// Every comment the system has seen, from either the webhook or the polling
-// reconciler. This is the shared dedup set: a comment id present here has
-// already been queued for processing, so neither path acts on it twice. It is
-// distinct from DmLog (which only records comments that matched a campaign);
-// this records all comments so the reconciler doesn't re-sweep non-matching
-// ones every cycle.
+// Legacy reconciliation model; currently unwired. Runtime code does not read
+// or write ProcessedComment. Current reconciliation dedup uses owner-reply
+// checks and DmLog guards instead.
 model ProcessedComment {
   id                 String   @id @default(cuid())
   instagramAccountId String
@@ -430,4 +432,26 @@ model TriagedComment {
 
   @@index([workspaceId, status, createdAt])
   @@index([mediaId])
+}
+
+enum InstagramProvider {
+  META
+  ZERNIO
+}
+
+model ZernioConnection {
+  workspaceId    String @id
+  apiKey         String
+  profileId      String?
+  webhookId      String?
+  webhookSecret  String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+// Claims persist independently of BullMQ retention so old taps never resend.
+model PostbackDelivery {
+  id String @id
+  createdAt DateTime @default(now())
 }

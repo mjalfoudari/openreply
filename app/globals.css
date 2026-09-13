@@ -88,3 +88,21 @@ select:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+@theme inline {
+  --color-zernio-coral: #EB3514;
+  --color-zernio-cream: #F0EFEB;
+  --color-zernio-border: #D9D8D3;
+  --color-zernio-charcoal: #2D2D2D;
+}
+.zernio-sponsor { background: var(--color-zernio-cream); color: var(--color-zernio-charcoal); border-color: var(--color-zernio-border); }
+.zernio-action { background: var(--color-zernio-coral); color: white; }
+
+@font-face {
+  font-family: 'Zernio Geist';
+  src: url('/fonts/geist-latin.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+.zernio-sponsor { font-family: 'Zernio Geist', sans-serif; }

@@ -32,8 +32,11 @@ import {
   getUserMedia,
   MetaApiError,
   type InstagramComment,
-} from "@/lib/meta/client";
-import { decryptToken } from "@/lib/meta/oauth";
+} from "@/lib/instagram/provider";
+import {
+  createInstagramContext,
+  type InstagramContext,
+} from "@/lib/instagram/provider";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 
 // Match Instagram's own private-reply window: 7 days from the comment. Older
@@ -61,7 +64,8 @@ interface SweepStat {
 }
 
 function errMessage(error: unknown): string {
-  if (error instanceof MetaApiError) return `Meta ${error.code}: ${error.message}`;
+  if (error instanceof MetaApiError)
+    return `Meta ${error.code}: ${error.message}`;
   if (error instanceof Error) return error.message;
   return "Unknown error";
 }
@@ -86,16 +90,23 @@ export async function reconcileComments(): Promise<void> {
           instagramId: true,
           username: true,
           accessToken: true,
+          provider: true,
+          workspaceId: true,
+          zernioAccountId: true,
         },
       },
     },
   });
 
   const sinceMs = Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000;
-  const tokenCache = new Map<string, string | null>();
+  const tokenCache = new Map<string, InstagramContext | null>();
 
   for (const automation of automations) {
-    const stat = await sweepCampaign(automation, sinceMs, tokenCache).catch(
+    const stat = await sweepCampaign({
+      automation: automation,
+      sinceMs: sinceMs,
+      tokenCache: tokenCache,
+    }).catch(
       (error): SweepStat => ({
         campaign: automation.name,
         keywords: automation.keywords.join(","),
@@ -111,7 +122,11 @@ export async function reconcileComments(): Promise<void> {
   }
 }
 
-async function sweepCampaign(
+async function sweepCampaign({
+  automation,
+  sinceMs,
+  tokenCache,
+}: {
   automation: {
     id: string;
     name: string;
@@ -127,11 +142,14 @@ async function sweepCampaign(
       instagramId: string;
       username: string;
       accessToken: string;
+      provider: "META" | "ZERNIO";
+      workspaceId: string;
+      zernioAccountId: string | null;
     };
-  },
-  sinceMs: number,
-  tokenCache: Map<string, string | null>
-): Promise<SweepStat> {
+  };
+  sinceMs: number;
+  tokenCache: Map<string, InstagramContext | null>;
+}): Promise<SweepStat> {
   const account = automation.instagramAccount;
   const stat: SweepStat = {
     campaign: automation.name,
@@ -150,7 +168,7 @@ async function sweepCampaign(
   let accessToken = tokenCache.get(account.id);
   if (accessToken === undefined) {
     try {
-      accessToken = decryptToken(account.accessToken);
+      accessToken = await createInstagramContext(account);
     } catch {
       accessToken = null;
     }
@@ -169,7 +187,10 @@ async function sweepCampaign(
     mediaIds.push(...(await adMediaFor(automation.postId)));
   } else if (automation.matchAnyPost) {
     try {
-      const media = await getUserMedia(accessToken, RECENT_MEDIA_LIMIT);
+      const media = await getUserMedia({
+        context: accessToken,
+        limit: RECENT_MEDIA_LIMIT,
+      });
       mediaIds.push(...media.map((m) => m.id));
     } catch (error) {
       stat.errors.push(`Media list: ${errMessage(error)}`);
@@ -182,7 +203,11 @@ async function sweepCampaign(
   for (const mediaId of mediaIds) {
     let comments: InstagramComment[];
     try {
-      comments = await getRecentMediaComments(accessToken, mediaId, sinceMs);
+      comments = await getRecentMediaComments({
+        context: accessToken,
+        mediaId: mediaId,
+        sinceMs: sinceMs,
+      });
     } catch (error) {
       stat.errors.push(`Comments ${mediaId}: ${errMessage(error)}`);
       continue;
@@ -202,8 +227,11 @@ async function sweepCampaign(
 
       const matched = automation.matchAnyWord
         ? true
-        : matchKeywords(c.text ?? "", automation.keywords, automation.wholeWordMatch)
-            .matched;
+        : matchKeywords(
+            c.text ?? "",
+            automation.keywords,
+            automation.wholeWordMatch
+          ).matched;
       if (!matched) return false;
       stat.matched += 1;
 
@@ -228,27 +256,17 @@ async function sweepCampaign(
       where: {
         automationId: automation.id,
         commentId: { in: needsAction.map((c) => c.id) },
-        // "Handled" means a DECISION was reached, not that a row exists.
-        //
-        // This clause used to accept `publicReplySentAt != null` on its own. The public
-        // reply is posted BEFORE the DM and stamped immediately, so every comment whose
-        // DM then failed looked handled and was dropped from candidates forever. That is
-        // how 178 people ended up with a public "شيك الخاص" under their comment and no
-        // DM, invisible, at attempts=1, never retried once.
-        //
-        // Now: an explicit skip, a genuinely completed send, or a failure we have given
-        // up on after 3 real attempts. The attempts clause only works because failures
-        // now increment — the two changes are one fix and must not be split.
         OR: [
           { status: "SKIPPED_DEDUP" },
           { status: "SKIPPED_PLAN_LIMIT" },
+          { dmDeliveryUnconfirmed: true },
+          { status: "FAILED", attempts: { gte: 3 } },
           {
             status: "SENT",
-            ...(automation.publicReplyEnabled
-              ? { publicReplySentAt: { not: null } }
-              : {}),
+            ...(automation.publicReplyEnabled ? {
+              OR: [{ publicReplySentAt: { not: null } }, { publicReplyDeliveryUnconfirmed: true }],
+            } : {}),
           },
-          { status: "FAILED", attempts: { gte: 3 } },
         ],
       },
       select: { commentId: true },
@@ -339,6 +357,7 @@ async function sweepCampaign(
       // comments wait behind hundreds of duplicates.
       await queue.add("process-comment", {
         instagramAccountId: account.instagramId,
+        accountConnectionId: account.id,
         commentId: c.id,
         commentText: c.text ?? "",
         commenterId: c.from?.id ?? `anon_${c.id}`,

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
-import { getUserInfo } from "@/lib/meta/client";
-import { decryptToken } from "@/lib/meta/oauth";
+import { getUserInfo } from "@/lib/instagram/provider";
+import { createInstagramContext } from "@/lib/instagram/provider";
 
 export const dynamic = "force-dynamic";
 
@@ -28,8 +28,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const token = decryptToken(account.accessToken);
-    const info = await getUserInfo(token);
+    const token = await createInstagramContext(account);
+    const info = await getUserInfo({ context: token });
     return NextResponse.json(
       {
         success: true,

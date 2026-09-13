@@ -19,6 +19,8 @@ const {
   mockWasMessageDelivered,
 } = vi.hoisted(() => ({
   mockPrisma: {
+    zernioConnection: { findUnique: vi.fn() },
+    postbackDelivery: { create: vi.fn(), delete: vi.fn() },
     automation: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -130,6 +132,9 @@ vi.mock("bullmq", () => {
   }
   return {
     Worker: MockWorker,
+    UnrecoverableError: class UnrecoverableError extends Error {
+      name = "UnrecoverableError";
+    },
   };
 });
 
@@ -217,6 +222,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   // Default: the delivery check finds nothing, so a send error stays a send error.
   mockWasMessageDelivered.mockResolvedValue(false);
+  mockPrisma.postbackDelivery.create.mockReset().mockResolvedValue({});
+  mockPrisma.postbackDelivery.delete.mockReset().mockResolvedValue({});
 
   mockPrisma.automation.findMany.mockResolvedValue([mockAutomation]);
   mockPrisma.automation.findFirst.mockResolvedValue(null);
@@ -519,6 +526,9 @@ describe("DM Worker — Full Pipeline", () => {
       expect.objectContaining({ data: expect.objectContaining({ status: "SENT" }) })
     );
     expect(mockReleaseWorkspaceDMReservation).not.toHaveBeenCalled();
+    expect(mockWasMessageDelivered).toHaveBeenCalledWith(
+      "decrypted_token", "ig_456", "commenter_999", expect.any(Number)
+    );
   });
 
   it("still records FAILED when the delivery check says nothing arrived", async () => {
@@ -969,7 +979,11 @@ describe("DM Worker — one private reply per comment", () => {
       {
         ...mockAutomation,
         trackedLinks: [
-          { slug: "abc123", label: null, destinationUrl: "https://example.com" },
+          {
+            slug: "abc123",
+            label: null,
+            destinationUrl: "https://example.com",
+          },
         ],
       },
     ]);
@@ -998,7 +1012,11 @@ describe("DM Worker — one private reply per comment", () => {
       {
         ...mockAutomation,
         trackedLinks: [
-          { slug: "abc123", label: null, destinationUrl: "https://example.com" },
+          {
+            slug: "abc123",
+            label: null,
+            destinationUrl: "https://example.com",
+          },
         ],
       },
     ]);
@@ -1289,4 +1307,289 @@ describe("DM Worker — public reply follows the DM", () => {
     // Promising a DM that is still hours away is the bug this ordering fixes.
     expect(mockSendCommentReply).not.toHaveBeenCalled();
   });
+});
+
+describe("Zernio worker routing", () => {
+  it("fails open on unknown follow status and sends once through the selected provider", async () => {
+    mockPrisma.zernioConnection.findUnique.mockResolvedValue({
+      apiKey: "encrypted_key",
+    });
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...mockAutomation,
+        requireFollow: true,
+        instagramAccount: {
+          ...mockAutomation.instagramAccount,
+          provider: "ZERNIO",
+          workspaceId: "workspace_123",
+          zernioAccountId: "zernio_selected",
+          accessToken: "",
+        },
+      },
+    ]);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            isFollower: null,
+            unavailableReason: "consent_required",
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ messageId: "sent" }))
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await getProcessor()(createMockJob());
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][0]).toContain(
+        "/inbox/comments/media_101/comment_555/private-reply"
+      );
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body).accountId).toBe(
+        "zernio_selected"
+      );
+      expect(mockSendPrivateReply).not.toHaveBeenCalled();
+      expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+      expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: "SENT" }),
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+it("stops BullMQ retries after an ambiguous Zernio direct-message outcome", async () => {
+  mockPrisma.zernioConnection.findUnique.mockResolvedValue({
+    apiKey: "encrypted",
+  });
+  mockPrisma.automation.findFirst.mockResolvedValue({
+    ...mockAutomation,
+    instagramAccount: {
+      ...mockAutomation.instagramAccount,
+      provider: "ZERNIO",
+      workspaceId: "workspace_123",
+      zernioAccountId: "remote",
+      accessToken: "",
+    },
+  });
+  const fetchMock = vi.fn().mockRejectedValue(new Error("connection reset"));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    await expect(getProcessor()(createMockPostbackJob())).rejects.toMatchObject(
+      {
+        name: "UnrecoverableError",
+        message: expect.stringContaining("Inspect the Instagram inbox"),
+      }
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it('binds queued comments to the local connection that received them', async () => {
+  mockPrisma.automation.findMany.mockResolvedValue([]);
+  const job = createMockJob();
+  Object.assign(job.data, { accountConnectionId: 'original-connection' });
+  await getProcessor()(job);
+  expect(mockPrisma.automation.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ instagramAccountId: 'original-connection' }) }));
+});
+
+it('never automatically resends a private reply with an unconfirmed delivery', async () => {
+  mockPrisma.dmLog.findUnique.mockResolvedValue({ status: 'FAILED', dmDeliveryUnconfirmed: true, publicReplySentAt: null });
+  await getProcessor()(createMockJob());
+  expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+  expect(mockPrisma.dmLog.update).not.toHaveBeenCalled();
+});
+
+it('keeps an unconfirmed public reply untouched after the DM was delivered', async () => {
+  mockPrisma.automation.findMany.mockResolvedValue([{ ...mockAutomation, publicReplyEnabled: true, publicReplyMessage: 'Thanks!', publicReplyMessages: [] }]);
+  mockPrisma.dmLog.findUnique.mockResolvedValue({ status: 'SENT', publicReplyDeliveryUnconfirmed: true, publicReplySentAt: null });
+  await getProcessor()(createMockJob());
+  expect(mockPrisma.dmLog.update).not.toHaveBeenCalled();
+});
+
+describe("durable Zernio postback delivery", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    const claims = new Set<string>();
+    mockPrisma.postbackDelivery.create.mockImplementation(
+      async ({ data }: { data: { id: string } }) => {
+        if (claims.has(data.id)) throw { code: "P2002" };
+        claims.add(data.id);
+        return data;
+      },
+    );
+    mockPrisma.postbackDelivery.delete.mockImplementation(
+      async ({ where }: { where: { id: string } }) => {
+        claims.delete(where.id);
+      },
+    );
+    mockPrisma.zernioConnection.findUnique.mockResolvedValue({
+      apiKey: "encrypted",
+    });
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation,
+      instagramAccount: {
+        ...mockAutomation.instagramAccount,
+        provider: "ZERNIO",
+        workspaceId: "workspace_123",
+        zernioAccountId: "remote",
+        accessToken: "",
+      },
+    });
+    fetchMock = vi.fn();
+  });
+
+  function tap(mid: string) {
+    return createMockPostbackJob({
+      instagramAccountId: "ig_456",
+      userId: "commenter_999",
+      payload: "reveal:auto_789",
+      mid,
+    });
+  }
+
+  it("retains an uncertain tap across a newer successful tap and queue eviction", async () => {
+    fetchMock
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify({ data: { messageId: "new-tap" } })),
+      )
+      .mockRejectedValueOnce(new Error("connection reset"));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const process = getProcessor();
+      await expect(process(tap("old"))).rejects.toMatchObject({
+        name: "UnrecoverableError",
+      });
+      await process(tap("new"));
+      await process({ ...tap("old"), id: "redelivery-job" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.postbackDelivery.delete).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("deduplicates successful old taps while permitting each distinct new mid", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response(JSON.stringify({ data: { messageId: "sent" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const process = getProcessor();
+      await process(tap("first"));
+      await process(tap("second"));
+      await process({ ...tap("first"), id: "after-retention" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockReleaseWorkspaceDMReservation).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("releases a claim on a confirmed rejection so the same tap can retry", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("{}", { status: 429 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: { messageId: "sent" } })),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const process = getProcessor();
+      await expect(process(tap("retry"))).rejects.toThrow();
+      await process(tap("retry"));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.postbackDelivery.delete).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("claims concurrent deliveries of the same tap before either can send twice", async () => {
+    fetchMock.mockImplementation(
+      async () => new Response(JSON.stringify({ data: { messageId: "sent" } })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const process = getProcessor();
+      await Promise.all([
+        process(tap("concurrent")),
+        process({ ...tap("concurrent"), id: "other-job" }),
+      ]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("deduplicates follow-gate prompts as well as reveal messages", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...mockAutomation,
+      requireFollow: true,
+      instagramAccount: {
+        ...mockAutomation.instagramAccount,
+        provider: "ZERNIO",
+        workspaceId: "workspace_123",
+        zernioAccountId: "remote",
+        accessToken: "",
+      },
+    });
+    fetchMock.mockImplementation(
+      async (_url: string, init: { method: string }) =>
+        new Response(
+          JSON.stringify(
+            init.method === "GET"
+              ? { isFollower: false }
+              : { data: { messageId: "prompt" } },
+          ),
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const process = getProcessor();
+      const followTap = tap("follow");
+      followTap.data = { ...followTap.data, payload: "followcheck:auto_789" };
+      await process(followTap);
+      await process({ ...followTap, id: "redelivery" });
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init.method === "POST"),
+      ).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+
+it("does not use Meta delivery verification for an uncertain Zernio private reply", async () => {
+  mockPrisma.zernioConnection.findUnique.mockResolvedValue({ apiKey: "encrypted" });
+  mockPrisma.automation.findMany.mockResolvedValue([{
+    ...mockAutomation,
+    instagramAccount: {
+      ...mockAutomation.instagramAccount,
+      provider: "ZERNIO",
+      workspaceId: "workspace_123",
+      zernioAccountId: "remote",
+      accessToken: "",
+    },
+  }]);
+  const fetchMock = vi.fn().mockRejectedValue(new Error("connection reset"));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    await getProcessor()(createMockJob());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockWasMessageDelivered).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "FAILED", dmDeliveryUnconfirmed: true }),
+    }));
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

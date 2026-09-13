@@ -38,6 +38,7 @@ export const PRIORITY_BACKLOG = 10;
 export type CommentSource = "WEBHOOK" | "POLLING";
 
 export interface ProcessCommentJob {
+  accountConnectionId?: string;
   instagramAccountId: string;
   commentId: string;
   commentText: string;
@@ -48,13 +49,14 @@ export interface ProcessCommentJob {
   // from. Campaigns are bound to that post, so both ids have to be matched.
   originalMediaId?: string;
   requeueAttempt?: number;
-  // Which path enqueued this comment. Recorded in the shared ProcessedComment
-  // dedup store so the reconciler can tell webhook- from polling-caught comments.
+  // Which path enqueued this comment. It is not copied to ProcessedComment or
+  // used for reconciliation dedup.
   source?: CommentSource;
 }
 
 // Delivered when a user taps an opening DM's button — carries the reveal target.
 export interface ProcessPostbackJob {
+  accountConnectionId?: string;
   instagramAccountId: string;
   userId: string;
   payload: string;
@@ -66,6 +68,7 @@ export interface ProcessPostbackJob {
 // Enqueued with a delay (followUpDelayMinutes) so it can fire later, not just
 // immediately.
 export interface ProcessFollowUpJob {
+  accountConnectionId?: string;
   instagramAccountId: string;
   userId: string;
   automationId: string;
@@ -75,6 +78,7 @@ export interface ProcessFollowUpJob {
 // An inbound DM from a user. Campaigns with `dmTriggerEnabled` whose keywords
 // match the text reply to the sender.
 export interface ProcessMessageJob {
+  accountConnectionId?: string;
   instagramAccountId: string;
   messageId: string;
   messageText: string;
