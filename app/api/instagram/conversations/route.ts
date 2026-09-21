@@ -10,6 +10,7 @@ import { createInstagramContext } from "@/lib/instagram/provider";
 
 export interface ConversationListItem {
   id: string;
+  detailsUnavailable?: boolean;
   contact: { id: string; username: string | null };
   updatedTime: string | null;
   lastMessage: {
@@ -55,13 +56,12 @@ export async function GET(request: NextRequest) {
     const conversations: ConversationListItem[] = raw.map((c) => {
       const participants = c.participants?.data ?? [];
       const contact =
-        participants.find((p) => p.id !== account.instagramId) ??
-        participants[0] ??
-        null;
+        participants.find((p) => p.id !== account.instagramId) ?? null;
       const last = c.messages?.data?.[0] ?? null;
 
       return {
         id: c.id,
+        detailsUnavailable: c.detailsUnavailable,
         contact: {
           id: contact?.id ?? "",
           username: contact?.username ?? null,

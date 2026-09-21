@@ -4,6 +4,7 @@ import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { sweepTriageComments } from "@/lib/triage/ingest";
 import { getRedisConnection } from "@/lib/queue/client";
 import { execSync } from "node:child_process";
+import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import os from "node:os";
 
 // ─── Single-instance guard ──────────────────────────────────────────────────
@@ -118,6 +119,10 @@ async function start() {
 
   async function poll() {
     try {
+      const attached = await attachPendingNextReels();
+      if (attached.bound > 0 || attached.failedAccounts > 0) {
+        console.log("[DM Worker] Next-reel attachment:", attached);
+      }
       await reconcileComments();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

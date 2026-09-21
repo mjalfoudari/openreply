@@ -578,32 +578,100 @@ export interface InstagramMessage {
 
 export interface InstagramConversation {
   id: string;
+  detailsUnavailable?: boolean;
   updated_time?: string;
   participants?: { data: InstagramParticipant[] };
   messages?: { data: InstagramMessage[] };
 }
 
 /**
- * List the account's DM conversations, newest first, each with its participants
- * and a one-message preview. `igUserId` is the account's professional user_id
- * (the same id used to send messages and as webhook entry.id).
+ * Load up to 50 recent conversations. A single broken field expansion can make
+ * Meta reject the entire page with code 1 (upstream issue #60). Halve only those
+ * failing pages until the affected conversation is isolated, then retain its
+ * basic metadata and advance using the OUTER conversation cursor.
+ *
+ * Healthy accounts still need just one request. Auth, permission, rate-limit,
+ * transport and minimal-list failures remain visible rather than looking empty.
  */
 export async function getConversations(
   accessToken: string,
   igUserId: string
 ): Promise<InstagramConversation[]> {
-  const url = new URL(`${instagramGraphBase()}/${igUserId}/conversations`);
-  url.searchParams.set("platform", "instagram");
-  url.searchParams.set(
-    "fields",
-    "participants,updated_time,messages.limit(1){message,from,created_time}"
-  );
-  url.searchParams.set("limit", "50");
-  url.searchParams.set("access_token", accessToken);
+  const fields =
+    "participants,updated_time,messages.limit(1){message,from,created_time}";
+  type Page = {
+    data?: InstagramConversation[];
+    paging?: { next?: string; cursors?: { after?: string } };
+  };
+  const results: InstagramConversation[] = [];
+  const seenIds = new Set<string>();
+  const seenCursors = new Set<string>();
+  let after: string | undefined;
+  let pageSize = 50;
 
-  const response = await fetch(url.toString());
-  const data = await handleResponse<{ data: InstagramConversation[] }>(response);
-  return data.data ?? [];
+  async function readPage(limit: number, requestedFields: string): Promise<Page> {
+    // Never follow Meta's next URL: rebuild on our trusted host and carry the
+    // token separately. A messages.paging cursor must never advance this list.
+    const url = new URL(`${instagramGraphBase()}/${igUserId}/conversations`);
+    url.searchParams.set("platform", "instagram");
+    url.searchParams.set("fields", requestedFields);
+    url.searchParams.set("limit", String(limit));
+    if (after) url.searchParams.set("after", after);
+    return handleResponse<Page>(
+      await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10_000),
+      })
+    );
+  }
+
+  // Also bound cursor traversal in case Meta repeats data with changing cursors.
+  for (let pages = 0; pages < 100 && results.length < 50; pages++) {
+    let limit = Math.min(pageSize, 50 - results.length);
+    let page: Page;
+    let unavailable = false;
+    while (true) {
+      try {
+        page = await readPage(limit, fields);
+        break;
+      } catch (error) {
+        if (!(error instanceof MetaApiError) || error.code !== 1) throw error;
+        if (limit > 1) {
+          limit = Math.max(1, Math.floor(limit / 2));
+          continue;
+        }
+        // This exact cursor succeeds with id,updated_time in the reported case.
+        // If even that fails, propagate the failure; do not skip unknown data.
+        page = await readPage(1, "id,updated_time");
+        unavailable = true;
+        console.warn("[Conversations] Detail expansion unavailable", {
+          code: error.code,
+          subcode: error.subcode,
+          trace: error.fbTraceId,
+        });
+        break;
+      }
+    }
+
+    const rows = page.data ?? [];
+    for (const row of rows) {
+      if (seenIds.has(row.id)) continue;
+      seenIds.add(row.id);
+      results.push(unavailable ? { ...row, detailsUnavailable: true } : row);
+      if (results.length === 50) return results;
+    }
+    if (!page.paging?.next || rows.length === 0) return results;
+    const nextAfter = page.paging.cursors?.after;
+    if (!nextAfter || seenCursors.has(nextAfter)) {
+      throw new Error("Instagram conversation pagination did not advance");
+    }
+    seenCursors.add(nextAfter);
+    after = nextAfter;
+    // Stay small around failures; grow back towards the normal page size after
+    // successful expansions. Consecutive bad entries cost two reads each.
+    pageSize = unavailable ? 1 : Math.min(50, limit * 2);
+  }
+  throw new Error("Instagram conversation pagination exceeded its safety limit");
 }
 
 /**

@@ -34,7 +34,7 @@ import {
 import { wasMessageDelivered } from "@/lib/meta/client";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import { gate as throttleGate, record as throttleRecord } from "@/lib/queue/adaptive-throttle";
-import { reserveDMSlot } from "@/lib/utils/rate-limiter";
+import { reserveDMSlot, releaseDMSlot } from "@/lib/utils/rate-limiter";
 import {
   releaseWorkspaceDMReservation,
   reserveWorkspaceDMSend,
@@ -46,6 +46,7 @@ import {
   renderMessageWithVisibleTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
+import { TRACKED_LINK_ORDER } from "@/lib/tracking/link-order";
 
 import {
   ZernioApiError,
@@ -264,7 +265,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           label: true,
           destinationUrl: true,
         },
-        orderBy: { createdAt: "asc" },
+        orderBy: TRACKED_LINK_ORDER,
       },
     },
     orderBy: { createdAt: "asc" },
@@ -796,6 +797,11 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       // Genuinely not delivered (false), or the check could not be completed (null).
       // null is treated as a real failure so nobody is quietly written off as delivered.
       throttleRecord(false, formatError(error));
+      // Release only a confirmed non-delivery. An inconclusive Meta check may
+      // still represent a delivered message and must keep its reservation.
+      if (delivered === false && rateLimit?.reserved) {
+        await releaseDMSlot(instagramAccountId);
+      }
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
         usage.periodStart
@@ -899,7 +905,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       workspace: true,
       trackedLinks: {
         select: { slug: true, label: true, destinationUrl: true },
-        orderBy: { createdAt: "asc" },
+        orderBy: TRACKED_LINK_ORDER,
       },
     },
   });
@@ -1258,7 +1264,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       workspace: true,
       trackedLinks: {
         select: { slug: true, label: true, destinationUrl: true },
-        orderBy: { createdAt: "asc" },
+        orderBy: TRACKED_LINK_ORDER,
       },
     },
     orderBy: { createdAt: "asc" },

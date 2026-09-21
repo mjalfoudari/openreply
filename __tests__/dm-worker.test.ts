@@ -13,6 +13,7 @@ const {
   mockMatchKeywords,
   mockReserveDMSlot,
   mockSendCommentReply,
+  mockReleaseDMSlot,
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
@@ -50,6 +51,7 @@ const {
   mockMatchKeywords: vi.fn(),
   mockReserveDMSlot: vi.fn(),
   mockSendCommentReply: vi.fn(),
+  mockReleaseDMSlot: vi.fn(),
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
@@ -101,6 +103,7 @@ vi.mock("@/lib/utils/keyword-matcher", () => ({
 
 vi.mock("@/lib/utils/rate-limiter", () => ({
   reserveDMSlot: mockReserveDMSlot,
+  releaseDMSlot: mockReleaseDMSlot,
 }));
 
 vi.mock("@/lib/billing/usage", () => ({
@@ -261,6 +264,7 @@ beforeEach(() => {
     shouldSkip: false,
     reserved: true,
   });
+  mockReleaseDMSlot.mockResolvedValue(0);
   mockReleaseWorkspaceDMReservation.mockResolvedValue({ count: 1 });
   mockSendPrivateReply.mockResolvedValue({
     recipient_id: "commenter_999",
@@ -340,7 +344,9 @@ describe("DM Worker — Full Pipeline", () => {
             label: true,
             destinationUrl: true,
           },
-          orderBy: { createdAt: "asc" },
+          // Button order: position first, with createdAt and id only as
+          // tie breakers, so tied rows can never come back swapped.
+          orderBy: [{ position: "asc" }, { createdAt: "asc" }, { id: "asc" }],
         },
       },
       orderBy: { createdAt: "asc" },
@@ -352,6 +358,8 @@ describe("DM Worker — Full Pipeline", () => {
     );
     expect(mockReserveWorkspaceDMSend).toHaveBeenCalledWith("workspace_123");
     expect(mockReserveDMSlot).toHaveBeenCalledWith("ig_456", 0);
+    // A successful send keeps its slot; the release path is failure-only.
+    expect(mockReleaseDMSlot).not.toHaveBeenCalled();
     expect(mockDecryptToken).toHaveBeenCalledWith("encrypted_token_abc");
     expect(mockSendPrivateReply).toHaveBeenCalledWith(
       "decrypted_token",
@@ -526,6 +534,7 @@ describe("DM Worker — Full Pipeline", () => {
       expect.objectContaining({ data: expect.objectContaining({ status: "SENT" }) })
     );
     expect(mockReleaseWorkspaceDMReservation).not.toHaveBeenCalled();
+    expect(mockReleaseDMSlot).not.toHaveBeenCalled();
     expect(mockWasMessageDelivered).toHaveBeenCalledWith(
       "decrypted_token", "ig_456", "commenter_999", expect.any(Number)
     );
@@ -541,6 +550,7 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "FAILED" }) })
     );
+    expect(mockReleaseDMSlot).toHaveBeenCalledWith("ig_456");
   });
 
   // An unknown answer must never be read as "delivered" — that would silently write
@@ -555,6 +565,7 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: "FAILED" }) })
     );
+    expect(mockReleaseDMSlot).not.toHaveBeenCalled();
   });
 
   it("should handle missing access token", async () => {
@@ -993,6 +1004,10 @@ describe("DM Worker — one private reply per comment", () => {
 
     const processor = getProcessor();
     await expect(processor(createMockJob())).resolves.toBeUndefined();
+
+    // The reserved rate slot must be handed back when the send fails, so a
+    // comment that never delivered a DM does not burn slots on each retry.
+    expect(mockReleaseDMSlot).toHaveBeenCalledWith("ig_456");
 
     // A text retry on the same comment would fail identically and overwrite the
     // real reason, so it must not be attempted.
