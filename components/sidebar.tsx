@@ -6,6 +6,8 @@
  * Text-only nav with active state and workspace section.
  */
 
+import LanguageSwitcher from "@/components/language-switcher";
+import { useI18n } from "@/lib/i18n/provider";
 import Link from "next/link";
 import Image from "next/image";
 import { zernioLink } from "@/lib/zernio-links";
@@ -20,7 +22,7 @@ const navItems = [
   { label: "DM Logs", href: "/logs" },
   { label: "Settings", href: "/settings" },
   { label: "Diagnostics", href: "/diagnostics" },
-];
+] as const;
 
 interface SidebarProps {
   isOpen: boolean;
@@ -33,6 +35,7 @@ export default function Sidebar({
   onClose,
   workspaceName,
 }: SidebarProps) {
+  const { t } = useI18n();
   const pathname = usePathname();
 
   return (
@@ -83,22 +86,23 @@ export default function Sidebar({
                   }
                 `}
               >
-                {item.label}
+                {t(item.label)}
               </Link>
             );
           })}
         </nav>
 
         <div className="px-5 py-4 border-t border-border">
+          <div className="mb-4"><LanguageSwitcher /></div>
           <p className="text-sm text-foreground truncate">{workspaceName}</p>
-          <p className="text-xs text-muted">Self-hosted</p>
+          <p className="text-xs text-muted">{t("Self-hosted")}</p>
           <a
             href={zernioLink({ placement: "sidebar" })}
             target="_blank"
             rel="sponsored noopener noreferrer"
             className="mt-4 flex items-center gap-3 text-xs text-muted hover:text-foreground"
           >
-            <span>Supported by</span>
+            <span>{t("Supported by")}</span>
             <Image
               src="/brand/zernio-primary.svg"
               alt="Zernio"
