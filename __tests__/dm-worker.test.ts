@@ -27,6 +27,7 @@ const {
       findFirst: vi.fn(),
     },
     dmLog: {
+      findMany: vi.fn(),
       findUnique: vi.fn(),
       findFirst: vi.fn(),
       upsert: vi.fn(),
@@ -230,6 +231,7 @@ beforeEach(() => {
 
   mockPrisma.automation.findMany.mockResolvedValue([mockAutomation]);
   mockPrisma.automation.findFirst.mockResolvedValue(null);
+  mockPrisma.dmLog.findMany.mockResolvedValue([]);
   mockPrisma.dmLog.findUnique.mockResolvedValue(null);
   mockPrisma.dmLog.create.mockResolvedValue({});
   // Two different lookups share findFirst: the cross-campaign private-reply
@@ -1094,6 +1096,98 @@ describe("DM Worker — DM keyword trigger", () => {
       mockSendDirectMessageWithButton.mock.calls.length +
       mockSendDirectMessageWithLinkButton.mock.calls.length;
     expect(sends).toBe(1);
+  });
+
+  it("prefers the most recently engaged campaign when multiple match", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...dmTriggerAutomation, id: "auto_a", name: "A" },
+      { ...dmTriggerAutomation, id: "auto_b", name: "B" },
+      { ...dmTriggerAutomation, id: "auto_c", name: "C" },
+    ]);
+    mockPrisma.dmLog.findMany.mockResolvedValue([
+      { automationId: "auto_b", createdAt: new Date(), dmSentAt: new Date() },
+    ]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue(null);
+    mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "تمام" });
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    const sends =
+      mockSendDirectMessage.mock.calls.length +
+      mockSendDirectMessageWithButton.mock.calls.length +
+      mockSendDirectMessageWithLinkButton.mock.calls.length;
+    expect(sends).toBe(1);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "auto_b",
+            commentId: "dm:mid_abc",
+          },
+        },
+      })
+    );
+  });
+
+  it("falls back to the oldest matching campaign when no recent engagement exists", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...dmTriggerAutomation, id: "oldest", name: "Oldest" },
+      { ...dmTriggerAutomation, id: "newer", name: "Newer" },
+    ]);
+    mockPrisma.dmLog.findMany.mockResolvedValue([]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue(null);
+    mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "ok" });
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "oldest",
+            commentId: "dm:mid_abc",
+          },
+        },
+      })
+    );
+  });
+
+  it("suppresses a duplicate DM from the same campaign within 24h", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...dmTriggerAutomation, id: "auto_dup", name: "Dup" },
+    ]);
+    mockPrisma.dmLog.findMany.mockResolvedValue([]);
+    mockPrisma.dmLog.findUnique.mockResolvedValue(null);
+    mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "ok" });
+    const recent = new Date(Date.now() - 5 * 60 * 1000);
+    mockPrisma.dmLog.findFirst.mockImplementation(
+      async (args: { where?: { status?: string } } = {}) =>
+        args.where?.status === "SENT"
+          ? { dmSentAt: recent }
+          : { commenterName: "commenter_user" }
+    );
+
+    const processor = getProcessor();
+    await processor(createMockMessageJob());
+
+    // No new send was attempted
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
+    // Logged SKIPPED_DEDUP for this inbound message
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "auto_dup",
+            commentId: "dm:mid_abc",
+          },
+        },
+        update: expect.objectContaining({ status: "SKIPPED_DEDUP" }),
+      })
+    );
   });
 
 
