@@ -59,6 +59,15 @@ const FOLLOW_GATE_MAX_BOUNCES = 2;
 const FOLLOW_RETRY_NOTE =
   "المتابعة ما ظهرت عندي بعد 🙏 تأكد إنك ضاغط Follow من حسابي، وبعدها اضغط الزر مرة ثانية وبيوصلك على طول";
 
+// Prefer a campaign the sender engaged with recently (commented on or was DMed by)
+// when several campaigns' keywords match the inbound DM. "Recent" is this window.
+const DM_RECENT_ENGAGEMENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+// Suppress sending an identical campaign DM again if the same campaign already
+// DMed this person very recently (e.g. they replied "تمام" right after receiving it).
+// This avoids duplicate spam while keeping the per-message dedupe intact.
+const DM_DUPLICATE_SUPPRESSION_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
 function formatError(error: unknown): string {
@@ -1279,18 +1288,66 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   // on 2026-08-26 someone typed "تمام اخي" and received FIFTEEN DMs, one per campaign,
   // because تم/تمام had just been added to sixteen keyword lists. A person who writes one
   // message expects one answer.
-  let answered = false;
-  for (const automation of automations) {
-    if (answered) break;
-    const matchResult = automation.matchAnyWord
-      ? { matched: true, matchedKeyword: null }
-      : matchKeywords(
-          messageText,
-          automation.keywords,
-          automation.wholeWordMatch
-        );
+  // Step 1: collect all keyword-matching campaigns first
+  const matched = automations
+    .map((automation) => ({
+      automation,
+      matchResult: automation.matchAnyWord
+        ? { matched: true, matchedKeyword: null as string | null }
+        : matchKeywords(messageText, automation.keywords, automation.wholeWordMatch),
+    }))
+    .filter((m) => m.matchResult.matched);
 
-    if (!matchResult.matched) continue;
+  if (matched.length === 0) return;
+
+  // Step 2: if several match, prefer the one this sender engaged with most recently
+  // within DM_RECENT_ENGAGEMENT_WINDOW_MS; otherwise fall back to createdAt asc (current behavior).
+  let ordered = matched;
+  if (matched.length > 1) {
+    const candidateIds = matched.map((m) => m.automation.id);
+    const since = new Date(Date.now() - DM_RECENT_ENGAGEMENT_WINDOW_MS);
+    const recentLogs = await prisma.dmLog.findMany({
+      where: {
+        commenterId: senderId,
+        automationId: { in: candidateIds },
+        createdAt: { gte: since },
+      },
+      select: { automationId: true, createdAt: true, dmSentAt: true },
+      orderBy: { createdAt: "desc" },
+      take: 100, // cap for safety; small candidate set in practice
+    });
+
+    const latestByAutomation = new Map<string, Date>();
+    for (const row of recentLogs) {
+      const when = row.dmSentAt ?? row.createdAt;
+      if (!latestByAutomation.has(row.automationId)) {
+        latestByAutomation.set(row.automationId, when);
+      }
+    }
+
+    let preferredId: string | null = null;
+    let preferredAt = 0;
+    for (const [automationId, when] of latestByAutomation.entries()) {
+      const ts = when.getTime();
+      if (ts > preferredAt) {
+        preferredAt = ts;
+        preferredId = automationId;
+      }
+    }
+
+    if (preferredId) {
+      ordered = [
+        // preferred first
+        ...matched.filter((m) => m.automation.id === preferredId),
+        // then the rest in their existing (createdAt asc) order
+        ...matched.filter((m) => m.automation.id !== preferredId),
+      ];
+    }
+  }
+
+  let answered = false;
+  for (const { automation, matchResult } of ordered) {
+    if (answered) break;
 
     const existingLog = await prisma.dmLog.findUnique({
       where: {
@@ -1308,6 +1365,52 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       existingLog?.status === "SKIPPED_PLAN_LIMIT" ||
       existingLog?.dmDeliveryUnconfirmed
     ) {
+      continue;
+    }
+
+    // Duplicate suppression: if this exact campaign DMed this person very recently,
+    // suppress a duplicate answer to a generic "تم/تمام"-style reply.
+    const recentSince = new Date(Date.now() - DM_DUPLICATE_SUPPRESSION_WINDOW_MS);
+    const recentSend = await prisma.dmLog.findFirst({
+      where: {
+        automationId: automation.id,
+        commenterId: senderId,
+        status: "SENT",
+        dmSentAt: { gte: recentSince },
+      },
+      select: { dmSentAt: true },
+      orderBy: { dmSentAt: "desc" },
+    });
+    if (recentSend?.dmSentAt) {
+      await prisma.dmLog.upsert({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId: dedupeId,
+          },
+        },
+        create: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: senderId,
+          commentText: messageText,
+          commentId: dedupeId,
+          matchedKeyword: matchResult.matchedKeyword,
+          status: "SKIPPED_DEDUP",
+          errorMessage: `Duplicate suppressed: campaign replied ${Math.round(
+            (Date.now() - recentSend.dmSentAt.getTime()) / 60000
+          )}m ago`,
+        },
+        update: {
+          status: "SKIPPED_DEDUP",
+          errorMessage: `Duplicate suppressed: campaign replied ${Math.round(
+            (Date.now() - recentSend.dmSentAt.getTime()) / 60000
+          )}m ago`,
+        },
+      });
+      // "Nothing" else answers this message — suppressing spam is preferable to picking an unrelated campaign.
+      answered = true;
       continue;
     }
 
