@@ -5,15 +5,30 @@
  */
 
 import { Queue } from "bullmq";
-import Redis from "ioredis";
+import Redis, { type RedisOptions } from "ioredis";
+
+/**
+ * REDIS_URL → ioredis options via WHATWG URL. Passing ioredis the raw string makes it
+ * call the deprecated url.parse() (DEP0169 on every webhook in Vercel logs).
+ */
+export function redisOptions(url = process.env.REDIS_URL!): RedisOptions {
+  const u = new URL(url);
+  return {
+    host: u.hostname,
+    port: u.port ? Number(u.port) : 6379,
+    username: u.username ? decodeURIComponent(u.username) : undefined,
+    password: u.password ? decodeURIComponent(u.password) : undefined,
+    db: u.pathname.length > 1 ? Number(u.pathname.slice(1)) : 0,
+    tls: u.protocol === "rediss:" ? {} : undefined,
+    maxRetriesPerRequest: null, // Required by BullMQ
+  };
+}
 
 let connection: Redis | null = null;
 
 export function getRedisConnection(): Redis {
   if (!connection) {
-    connection = new Redis(process.env.REDIS_URL!, {
-      maxRetriesPerRequest: null, // Required by BullMQ
-    });
+    connection = new Redis(redisOptions());
   }
   return connection;
 }
