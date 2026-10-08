@@ -25,6 +25,8 @@
  * filter on the account to widen results.
  */
 
+import { MAX_COMMENT_SEND_ATTEMPTS } from "@/lib/queue/comment-delivery";
+import { hasLegacyUnconfirmedDelivery } from "@/lib/instagram/delivery-errors";
 import { prisma } from "@/lib/db/client";
 import { PRIORITY_BACKLOG, getDMQueue } from "@/lib/queue/client";
 import {
@@ -252,26 +254,28 @@ async function sweepCampaign({
     // enough — the reply still has to land); otherwise a SENT DM is enough. This
     // is what lets a comment whose DM sent but whose public reply failed come
     // back and retry the reply.
-    const handled = await prisma.dmLog.findMany({
+    const logs = await prisma.dmLog.findMany({
       where: {
         automationId: automation.id,
         commentId: { in: needsAction.map((c) => c.id) },
-        OR: [
-          { status: "SKIPPED_DEDUP" },
-          { status: "SKIPPED_PLAN_LIMIT" },
-          { dmDeliveryUnconfirmed: true },
-          { status: "FAILED", attempts: { gte: 3 } },
-          {
-            status: "SENT",
-            ...(automation.publicReplyEnabled ? {
-              OR: [{ publicReplySentAt: { not: null } }, { publicReplyDeliveryUnconfirmed: true }],
-            } : {}),
-          },
-        ],
+
       },
-      select: { commentId: true },
+      select: {
+        commentId: true, status: true, attempts: true, errorMessage: true,
+        dmDeliveryUnconfirmed: true, publicReplySentAt: true,
+        publicReplyDeliveryUnconfirmed: true,
+      },
     });
-    const handledSet = new Set(handled.map((h) => h.commentId));
+    const handledSet = new Set(logs.filter((log) => {
+      const dmStopped = log.status === "SENT" || log.status === "SKIPPED_PLAN_LIMIT" ||
+        log.dmDeliveryUnconfirmed || log.attempts >= MAX_COMMENT_SEND_ATTEMPTS ||
+        (log.status === "FAILED" && hasLegacyUnconfirmedDelivery(log.errorMessage));
+      const replyStopped = !automation.publicReplyEnabled ||
+        log.publicReplySentAt || log.publicReplyDeliveryUnconfirmed;
+      const unsafe = log.dmDeliveryUnconfirmed || log.attempts >= MAX_COMMENT_SEND_ATTEMPTS ||
+        (log.status === "FAILED" && hasLegacyUnconfirmedDelivery(log.errorMessage));
+      return unsafe || log.status === "SKIPPED_DEDUP" || (dmStopped && replyStopped);
+    }).map((log) => log.commentId));
 
     // One DM per person per campaign, not per comment. Dedup is keyed on
     // (automationId, commentId), so someone who writes "مهتم" three times used to

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const {
   mockPrisma,
@@ -32,6 +32,7 @@ const {
       findFirst: vi.fn(),
       upsert: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       create: vi.fn(),
     },
     instagramAccount: {
@@ -142,7 +143,10 @@ vi.mock("bullmq", () => {
   };
 });
 
+import { MetaApiError, RateLimitError } from "@/lib/meta/client";
 import { createDMWorker } from "../lib/queue/dm-worker";
+import { getRedisConnection } from "@/lib/queue/client";
+import { hashRecipientId } from "@/lib/tracking/server";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
@@ -243,7 +247,8 @@ beforeEach(() => {
       args.where?.status === "SENT" ? null : { commenterName: "commenter_user" }
   );
   mockPrisma.dmLog.upsert.mockResolvedValue({});
-  mockPrisma.dmLog.update.mockResolvedValue({});
+  mockPrisma.dmLog.update.mockReset().mockResolvedValue({});
+  mockPrisma.dmLog.updateMany.mockReset().mockResolvedValue({ count: 1 });
   mockPrisma.instagramAccount.findUnique.mockResolvedValue({
     workspaceId: "workspace_123",
   });
@@ -497,7 +502,7 @@ describe("DM Worker — Full Pipeline", () => {
   // someone Meta may already have messaged (it returns a generic error for sends
   // that landed), and Instagram allows only one private reply per comment.
   it("should log FAILED and release usage without rethrowing when private reply sending fails", async () => {
-    const error = new Error("API Error");
+    const error = new RateLimitError("API Error");
     mockSendPrivateReply.mockRejectedValue(error);
 
     const processor = getProcessor();
@@ -550,9 +555,9 @@ describe("DM Worker — Full Pipeline", () => {
     await processor(createMockJob());
 
     expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: "FAILED" }) })
+      expect.objectContaining({ data: expect.objectContaining({ status: "FAILED", dmDeliveryUnconfirmed: true }) })
     );
-    expect(mockReleaseDMSlot).toHaveBeenCalledWith("ig_456");
+    expect(mockReleaseDMSlot).not.toHaveBeenCalled();
   });
 
   // An unknown answer must never be read as "delivered" — that would silently write
@@ -641,15 +646,17 @@ describe("DM Worker — Full Pipeline", () => {
     await processor(createMockJob());
 
     // Primary button title comes from linkButtonLabel; the second from its
-    // own stored label. Both point at their tracked /r/<slug> URLs.
+    // own stored label. Both point at their tracked /r/<slug> URLs, tagged
+    // with the commenter's recipient token.
+    const token = hashRecipientId(mockJobData.commenterId);
     expect(mockSendPrivateReplyWithLinkButton).toHaveBeenCalledWith(
       "decrypted_token",
       "ig_456",
       "comment_555",
-      "Hey commenter_user! Here is the offer:\n\n👇\nhttp://localhost:3000/r/abc123",
+      `Hey commenter_user! Here is the offer:\n\n👇\nhttp://localhost:3000/r/abc123?r=${hashRecipientId(mockJobData.commenterId)}`,
       [
-        { title: "Get offer", url: "http://localhost:3000/r/abc123" },
-        { title: "Book a call", url: "http://localhost:3000/r/def456" },
+        { title: "Get offer", url: `http://localhost:3000/r/abc123?r=${token}` },
+        { title: "Book a call", url: `http://localhost:3000/r/def456?r=${token}` },
       ]
     );
   });
@@ -718,8 +725,8 @@ describe("DM Worker — Full Pipeline", () => {
       "decrypted_token",
       "ig_456",
       "comment_555",
-      "Hey commenter_user! Here is the offer:\n\n👇\nhttp://localhost:3000/r/abc123",
-      [{ title: "Get offer", url: "http://localhost:3000/r/abc123" }]
+      `Hey commenter_user! Here is the offer:\n\n👇\nhttp://localhost:3000/r/abc123?r=${hashRecipientId(mockJobData.commenterId)}`,
+      [{ title: "Get offer", url: `http://localhost:3000/r/abc123?r=${hashRecipientId(mockJobData.commenterId)}` }]
     );
   });
 
@@ -752,7 +759,7 @@ describe("DM Worker — Full Pipeline", () => {
       "comment_555",
       "Hey commenter_user, welcome!",
       "Get the link",
-      "followcheck:auto_789"
+      "followcheck:auto_789:open"
     );
     // Follow status is verified on the tap, not at comment time.
     expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
@@ -915,7 +922,7 @@ describe("DM Worker — Full Pipeline", () => {
       trackedLinks: [],
     });
     mockSendDirectMessage.mockRejectedValue(
-      new Error("This message is sent outside of allowed window.")
+      new MetaApiError(10, undefined, undefined, "This message is sent outside of allowed window.")
     );
 
     const processor = getProcessor();
@@ -1001,7 +1008,7 @@ describe("DM Worker — one private reply per comment", () => {
       },
     ]);
     mockSendPrivateReplyWithLinkButton.mockRejectedValue(
-      new Error("The comment is invalid for a private reply")
+      new MetaApiError(100, undefined, undefined, "The comment is invalid for a private reply")
     );
 
     const processor = getProcessor();
@@ -1018,7 +1025,7 @@ describe("DM Worker — one private reply per comment", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           status: "FAILED",
-          errorMessage: "The comment is invalid for a private reply",
+          errorMessage: expect.stringContaining("The comment is invalid for a private reply"),
         }),
       })
     );
@@ -1038,7 +1045,7 @@ describe("DM Worker — one private reply per comment", () => {
       },
     ]);
     mockSendPrivateReplyWithLinkButton.mockRejectedValue(
-      new Error("Unsupported message template")
+      new MetaApiError(100, undefined, undefined, "Unsupported message template")
     );
 
     const processor = getProcessor();
@@ -1282,8 +1289,8 @@ describe("DM Worker — DM keyword trigger", () => {
       "decrypted_token",
       "ig_456",
       "commenter_999",
-      "DM reply for commenter_user\n\n👇\nhttp://localhost:3000/r/abc123",
-      [{ title: "Get it", url: "http://localhost:3000/r/abc123" }]
+      `DM reply for commenter_user\n\n👇\nhttp://localhost:3000/r/abc123?r=${hashRecipientId(mockJobData.commenterId)}`,
+      [{ title: "Get it", url: `http://localhost:3000/r/abc123?r=${hashRecipientId(mockJobData.commenterId)}` }]
     );
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
   });
@@ -1664,7 +1671,15 @@ describe("durable Zernio postback delivery", () => {
     try {
       const process = getProcessor();
       const followTap = tap("follow");
-      followTap.data = { ...followTap.data, payload: "followcheck:auto_789" };
+      // The prompt goes out on the last delayed re-check — an earlier false
+      // only queues the next one — so exercise that pass: that is where the
+      // prompt is sent, and where a redelivery must not send it a second time.
+      followTap.data = {
+        ...followTap.data,
+        payload: "followcheck:auto_789",
+        followRecheck: true,
+        followRecheckAttempt: 2,
+      };
       await process(followTap);
       await process({ ...followTap, id: "redelivery" });
       expect(
